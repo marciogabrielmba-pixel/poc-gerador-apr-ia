@@ -1,5 +1,10 @@
 import streamlit as st
+import zipfile
+import io
+import re
 import time
+import unicodedata
+from openpyxl import load_workbook
 
 st.set_page_config(
     page_title="Gerador de APR com IA",
@@ -7,176 +12,451 @@ st.set_page_config(
     layout="wide"
 )
 
-# -----------------------------
+# ============================================================
 # CONFIGURAÇÃO
-# -----------------------------
+# ============================================================
 
 st.title("🦺 Gerador de APR com IA")
-st.subheader("Prova de Conceito — 10 APRs em até 50 minutos")
+st.subheader("POC — Consulta inteligente à base de APRs")
 
-st.markdown("---")
+st.info(
+    "Objetivo do POC: consultar uma base real de APRs, "
+    "encontrar atividades semelhantes e preparar a base "
+    "para geração automática de novas APRs."
+)
 
-# Indicadores
+# ============================================================
+# INDICADORES
+# ============================================================
+
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.metric("META", "10 APRs")
+    st.metric("🎯 Meta", "10 APRs")
 
 with col2:
-    st.metric("TEMPO TOTAL", "50 minutos")
+    st.metric("⏱️ Meta de entrega", "50 minutos")
 
 with col3:
-    st.metric("TEMPO / APR", "5 minutos")
+    st.metric("⚡ Meta por APR", "≤ 5 minutos")
 
-st.markdown("---")
+st.divider()
 
-# -----------------------------
-# ENTRADA
-# -----------------------------
+# ============================================================
+# FUNÇÕES
+# ============================================================
 
-st.markdown("### 1. Informe a atividade")
+STOPWORDS = {
+    "a", "o", "e", "de", "da", "do", "das", "dos",
+    "em", "no", "na", "nos", "nas", "para", "por",
+    "com", "sem", "um", "uma", "uns", "umas",
+    "ao", "aos", "as", "os", "que", "se", "é",
+    "ser", "foi", "são", "como"
+}
 
-atividade = st.text_input(
-    "Digite a atividade para gerar a APR:",
-    placeholder="Ex.: Instalação de eletrocalhas em altura"
+
+def normalizar(texto):
+    """Remove acentos, pontuação e transforma em minúsculas."""
+
+    texto = str(texto)
+
+    texto = unicodedata.normalize(
+        "NFKD",
+        texto
+    ).encode(
+        "ASCII",
+        "ignore"
+    ).decode(
+        "ASCII"
+    )
+
+    texto = texto.lower()
+
+    texto = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        texto
+    )
+
+    texto = re.sub(
+        r"\s+",
+        " ",
+        texto
+    ).strip()
+
+    return texto
+
+
+def palavras(texto):
+    """Transforma texto em conjunto de palavras relevantes."""
+
+    texto = normalizar(texto)
+
+    return {
+        palavra
+        for palavra in texto.split()
+        if len(palavra) > 2
+        and palavra not in STOPWORDS
+    }
+
+
+def similaridade(consulta, texto):
+    """Calcula uma similaridade simples entre consulta e APR."""
+
+    palavras_consulta = palavras(consulta)
+    palavras_texto = palavras(texto)
+
+    if not palavras_consulta or not palavras_texto:
+        return 0
+
+    intersecao = palavras_consulta.intersection(
+        palavras_texto
+    )
+
+    return len(intersecao) / len(palavras_consulta) * 100
+
+
+def ler_excel(conteudo, nome_arquivo):
+    """Lê todas as planilhas Excel dentro do arquivo."""
+
+    resultados = []
+
+    try:
+
+        arquivo = io.BytesIO(conteudo)
+
+        workbook = load_workbook(
+            arquivo,
+            read_only=True,
+            data_only=True
+        )
+
+        for nome_planilha in workbook.sheetnames:
+
+            planilha = workbook[nome_planilha]
+
+            textos = []
+
+            for linha in planilha.iter_rows(
+                values_only=True
+            ):
+
+                valores = []
+
+                for valor in linha:
+
+                    if valor is not None:
+
+                        valores.append(
+                            str(valor)
+                        )
+
+                if valores:
+
+                    textos.append(
+                        " | ".join(valores)
+                    )
+
+            texto_final = "\n".join(textos)
+
+            if texto_final.strip():
+
+                resultados.append({
+                    "arquivo": nome_arquivo,
+                    "planilha": nome_planilha,
+                    "texto": texto_final
+                })
+
+        workbook.close()
+
+    except Exception as erro:
+
+        resultados.append({
+            "arquivo": nome_arquivo,
+            "planilha": "ERRO",
+            "texto": f"Não foi possível ler o arquivo: {erro}"
+        })
+
+    return resultados
+
+
+# ============================================================
+# UPLOAD DA BASE
+# ============================================================
+
+st.header("📦 1. Carregar base FONTE")
+
+st.write(
+    "Envie o arquivo **FONTE.zip** contendo as APRs em Excel."
 )
 
-# -----------------------------
-# GERAÇÃO
-# -----------------------------
+arquivo_zip = st.file_uploader(
+    "Selecione o FONTE.zip",
+    type=["zip"]
+)
 
-if st.button("🚀 GERAR APR", type="primary"):
+if arquivo_zip:
 
-    if not atividade:
+    tamanho_mb = arquivo_zip.size / (1024 * 1024)
 
-        st.warning("Digite uma atividade primeiro.")
+    st.success(
+        f"Arquivo recebido: **{arquivo_zip.name}** "
+        f"({tamanho_mb:.1f} MB)"
+    )
 
-    else:
+    if st.button(
+        "🔎 INDEXAR BASE DE APRs",
+        type="primary"
+    ):
 
         inicio = time.time()
 
-        with st.spinner("Analisando atividade e estruturando APR..."):
+        base = []
 
-            time.sleep(2)
+        progresso = st.progress(0)
 
-        tempo = time.time() - inicio
+        status = st.empty()
 
-        st.success("APR gerada com sucesso!")
+        try:
 
-        st.markdown("---")
+            arquivo_zip.seek(0)
 
-        # -----------------------------
-        # RESULTADO
-        # -----------------------------
+            with zipfile.ZipFile(
+                arquivo_zip,
+                "r"
+            ) as zip_ref:
 
-        st.markdown("## 📋 APR GERADA")
+                arquivos_excel = [
+                    nome
+                    for nome in zip_ref.namelist()
+                    if nome.lower().endswith(
+                        (".xlsx", ".xlsm")
+                    )
+                    and not nome.startswith("__MACOSX")
+                ]
 
-        st.markdown(f"### Atividade")
-        st.write(atividade)
+                total = len(arquivos_excel)
 
-        col1, col2 = st.columns(2)
+                if total == 0:
 
-        with col1:
+                    st.error(
+                        "Nenhum arquivo Excel (.xlsx ou .xlsm) "
+                        "foi encontrado dentro do ZIP."
+                    )
 
-            st.markdown("### Perigos identificados")
+                else:
 
-            st.write("""
-            - Trabalho em altura
-            - Queda de pessoas
-            - Queda de materiais
-            - Proximidade de estruturas
-            """)
+                    for contador, nome_arquivo in enumerate(
+                        arquivos_excel,
+                        start=1
+                    ):
 
-        with col2:
+                        status.text(
+                            f"Lendo {contador} de {total}: "
+                            f"{nome_arquivo}"
+                        )
 
-            st.markdown("### Riscos")
+                        conteudo = zip_ref.read(
+                            nome_arquivo
+                        )
 
-            st.write("""
-            - Queda com diferença de nível
-            - Queda de objetos
-            - Impacto contra estruturas
-            - Lesões graves
-            """)
+                        dados = ler_excel(
+                            conteudo,
+                            nome_arquivo
+                        )
 
-        st.markdown("### Consequências")
+                        base.extend(dados)
 
-        st.write("""
-        Lesões leves, graves ou fatais dependendo da exposição,
-        queda de materiais e danos a equipamentos.
-        """)
+                        progresso.progress(
+                            contador / total
+                        )
 
-        st.markdown("### Medidas de Controle")
+            tempo = time.time() - inicio
 
-        st.write("""
-        1. Inspecionar previamente o local de trabalho.
-        2. Isolar e sinalizar a área.
-        3. Verificar condições dos equipamentos.
-        4. Utilizar proteção coletiva sempre que aplicável.
-        5. Utilizar sistema de proteção contra quedas.
-        6. Manter ferramentas e materiais organizados.
-        7. Garantir trabalhador capacitado e autorizado.
-        8. Realizar DDS antes do início da atividade.
-        """)
+            st.session_state["base_aprs"] = base
+            st.session_state["quantidade_arquivos"] = total
+            st.session_state["tempo_indexacao"] = tempo
 
-        st.markdown("### EPC")
+            status.empty()
 
-        st.write("""
-        Guarda-corpo, isolamento da área, sinalização,
-        linha de vida e demais proteções coletivas aplicáveis.
-        """)
-
-        st.markdown("### EPI")
-
-        st.write("""
-        Capacete com jugular, calçado de segurança,
-        óculos de proteção, luvas adequadas e cinturão
-        tipo paraquedista quando aplicável.
-        """)
-
-        st.markdown("### Requisitos legais de referência")
-
-        st.write("""
-        NR-01 — Gerenciamento de Riscos Ocupacionais
-        NR-06 — Equipamento de Proteção Individual
-        NR-18 — Segurança e Saúde na Indústria da Construção
-        NR-35 — Trabalho em Altura
-        """)
-
-        st.markdown("---")
-
-        # -----------------------------
-        # KPI
-        # -----------------------------
-
-        st.markdown("## ⏱️ Resultado da POC")
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-            st.metric(
-                "Tempo desta APR",
-                f"{tempo:.1f} segundos"
+            st.success(
+                f"✅ Base indexada com sucesso em "
+                f"**{tempo:.1f} segundos**."
             )
 
-        with c2:
-            st.metric(
-                "Meta por APR",
-                "≤ 5 minutos"
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric(
+                    "Arquivos Excel",
+                    total
+                )
+
+            with col2:
+                st.metric(
+                    "Planilhas indexadas",
+                    len(base)
+                )
+
+            with col3:
+                st.metric(
+                    "Tempo",
+                    f"{tempo:.1f}s"
+                )
+
+        except Exception as erro:
+
+            st.error(
+                f"Erro durante a indexação: {erro}"
             )
 
-        with c3:
-            st.metric(
-                "Meta da POC",
-                "10 APRs / 50 min"
-            )
 
-        st.success(
-            "🎯 A demonstração indica capacidade de geração dentro "
-            "da meta de 5 minutos por APR."
+# ============================================================
+# PESQUISA
+# ============================================================
+
+if "base_aprs" in st.session_state:
+
+    st.divider()
+
+    st.header("🔎 2. Pesquisar na base de APRs")
+
+    atividade = st.text_input(
+        "Digite a atividade para pesquisar:",
+        placeholder=(
+            "Ex.: Instalação de eletrocalhas em altura"
         )
+    )
 
-        st.info(
-            "Esta é uma POC. A próxima etapa será conectar a base "
-            "real de APRs e substituir a geração demonstrativa por "
-            "IA + recuperação de documentos."
-        )
+    quantidade_resultados = st.slider(
+        "Quantidade de APRs semelhantes:",
+        min_value=1,
+        max_value=10,
+        value=5
+    )
+
+    if st.button(
+        "🔍 PESQUISAR APRs",
+        type="primary"
+    ):
+
+        if not atividade.strip():
+
+            st.warning(
+                "Digite uma atividade para realizar a pesquisa."
+            )
+
+        else:
+
+            inicio_pesquisa = time.time()
+
+            resultados = []
+
+            for item in st.session_state["base_aprs"]:
+
+                score = similaridade(
+                    atividade,
+                    item["texto"]
+                )
+
+                if score > 0:
+
+                    resultados.append({
+                        "score": score,
+                        "arquivo": item["arquivo"],
+                        "planilha": item["planilha"],
+                        "texto": item["texto"]
+                    })
+
+            resultados.sort(
+                key=lambda x: x["score"],
+                reverse=True
+            )
+
+            resultados = resultados[
+                :quantidade_resultados
+            ]
+
+            tempo_pesquisa = (
+                time.time() - inicio_pesquisa
+            )
+
+            st.success(
+                f"Pesquisa concluída em "
+                f"**{tempo_pesquisa:.3f} segundos**."
+            )
+
+            if not resultados:
+
+                st.warning(
+                    "Nenhuma APR semelhante foi encontrada."
+                )
+
+            else:
+
+                st.subheader(
+                    f"📋 {len(resultados)} APR(s) encontrada(s)"
+                )
+
+                for numero, resultado in enumerate(
+                    resultados,
+                    start=1
+                ):
+
+                    with st.expander(
+                        f"#{numero} — "
+                        f"{resultado['arquivo']} "
+                        f"— Similaridade "
+                        f"{resultado['score']:.1f}%"
+                    ):
+
+                        st.write(
+                            f"**Arquivo:** "
+                            f"{resultado['arquivo']}"
+                        )
+
+                        st.write(
+                            f"**Planilha:** "
+                            f"{resultado['planilha']}"
+                        )
+
+                        st.write(
+                            f"**Similaridade:** "
+                            f"{resultado['score']:.1f}%"
+                        )
+
+                        st.text_area(
+                            "Conteúdo encontrado:",
+                            resultado["texto"][:5000],
+                            height=250,
+                            key=f"resultado_{numero}"
+                        )
+
+
+# ============================================================
+# PRÓXIMA ETAPA
+# ============================================================
+
+st.divider()
+
+st.header("🚀 Próxima etapa do POC")
+
+st.write(
+    """
+Depois de validarmos a pesquisa nas APRs reais, vamos evoluir o sistema para:
+
+1. Encontrar automaticamente as APRs mais semelhantes;
+2. Identificar perigos e riscos relacionados;
+3. Identificar controles existentes;
+4. Consultar NRs e requisitos aplicáveis;
+5. Montar uma nova APR;
+6. Preservar o layout padrão da empresa;
+7. Gerar a APR em Excel;
+8. Medir se conseguimos atingir a meta de **≤ 5 minutos por APR**.
+"""
+)
+
+st.caption(
+    "POC — A pesquisa atual utiliza a base fornecida pelo usuário. "
+    "A geração automática por IA será implementada na próxima etapa."
+)
