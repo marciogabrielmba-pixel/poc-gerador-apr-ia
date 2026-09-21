@@ -4,17 +4,18 @@ import io
 import re
 import time
 import unicodedata
+from collections import defaultdict
 from openpyxl import load_workbook
+
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
 
 st.set_page_config(
     page_title="Gerador de APR com IA",
     page_icon="🦺",
     layout="wide"
 )
-
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
 
 st.title("🦺 Gerador de APR com IA")
 st.subheader("POC — Consulta inteligente à base de APRs")
@@ -43,7 +44,7 @@ with col3:
 st.divider()
 
 # ============================================================
-# FUNÇÕES
+# STOPWORDS
 # ============================================================
 
 STOPWORDS = {
@@ -51,13 +52,16 @@ STOPWORDS = {
     "em", "no", "na", "nos", "nas", "para", "por",
     "com", "sem", "um", "uma", "uns", "umas",
     "ao", "aos", "as", "os", "que", "se", "é",
-    "ser", "foi", "são", "como"
+    "ser", "foi", "são", "como", "ou", "não",
+    "mais", "menos", "entre", "sobre", "pela",
+    "pelo", "pelas", "pelos"
 }
 
+# ============================================================
+# NORMALIZAÇÃO
+# ============================================================
 
 def normalizar(texto):
-    """Remove acentos, pontuação e transforma em minúsculas."""
-
     texto = str(texto)
 
     texto = unicodedata.normalize(
@@ -87,39 +91,157 @@ def normalizar(texto):
     return texto
 
 
-def palavras(texto):
-    """Transforma texto em conjunto de palavras relevantes."""
-
+def tokens(texto):
     texto = normalizar(texto)
 
-    return {
+    return [
         palavra
         for palavra in texto.split()
         if len(palavra) > 2
         and palavra not in STOPWORDS
-    }
+    ]
 
 
-def similaridade(consulta, texto):
-    """Calcula uma similaridade simples entre consulta e APR."""
+def tokens_unicos(texto):
+    return set(tokens(texto))
 
-    palavras_consulta = palavras(consulta)
-    palavras_texto = palavras(texto)
 
-    if not palavras_consulta or not palavras_texto:
+# ============================================================
+# SCORE DE RELEVÂNCIA
+# ============================================================
+
+def calcular_score(consulta, linha):
+    """
+    Calcula relevância da consulta em relação a uma linha.
+    
+    Critérios:
+    - cobertura dos termos;
+    - frequência;
+    - proximidade;
+    - correspondência da expressão;
+    """
+
+    consulta_normalizada = normalizar(consulta)
+    linha_normalizada = normalizar(linha)
+
+    consulta_tokens = tokens_unicos(consulta)
+    linha_tokens = tokens(linha)
+
+    if not consulta_tokens or not linha_tokens:
         return 0
 
-    intersecao = palavras_consulta.intersection(
-        palavras_texto
+    # --------------------------------------------------------
+    # 1. Cobertura dos termos
+    # --------------------------------------------------------
+
+    encontrados = consulta_tokens.intersection(
+        set(linha_tokens)
     )
 
-    return len(intersecao) / len(palavras_consulta) * 100
+    cobertura = (
+        len(encontrados) /
+        len(consulta_tokens)
+    )
 
+    # --------------------------------------------------------
+    # 2. Frequência
+    # --------------------------------------------------------
+
+    frequencia = 0
+
+    for termo in encontrados:
+
+        frequencia += linha_tokens.count(termo)
+
+    frequencia_bonus = min(
+        frequencia * 2,
+        10
+    )
+
+    # --------------------------------------------------------
+    # 3. Expressão exata
+    # --------------------------------------------------------
+
+    frase_bonus = 0
+
+    if (
+        len(consulta_normalizada) > 5
+        and consulta_normalizada in linha_normalizada
+    ):
+        frase_bonus = 25
+
+    # --------------------------------------------------------
+    # 4. Proximidade dos termos
+    # --------------------------------------------------------
+
+    proximidade_bonus = 0
+
+    posicoes = []
+
+    for termo in consulta_tokens:
+
+        for i, palavra in enumerate(linha_tokens):
+
+            if palavra == termo:
+
+                posicoes.append(i)
+
+                break
+
+    if len(posicoes) >= 2:
+
+        distancia = (
+            max(posicoes) -
+            min(posicoes)
+        )
+
+        if distancia <= 5:
+            proximidade_bonus = 15
+
+        elif distancia <= 10:
+            proximidade_bonus = 8
+
+    # --------------------------------------------------------
+    # 5. Termos principais
+    # --------------------------------------------------------
+
+    termo_bonus = 0
+
+    for termo in encontrados:
+
+        if len(termo) >= 8:
+            termo_bonus += 3
+
+    termo_bonus = min(
+        termo_bonus,
+        15
+    )
+
+    # --------------------------------------------------------
+    # SCORE FINAL
+    # --------------------------------------------------------
+
+    score = (
+        cobertura * 55
+        + frequencia_bonus
+        + frase_bonus
+        + proximidade_bonus
+        + termo_bonus
+    )
+
+    return min(
+        score,
+        100
+    )
+
+
+# ============================================================
+# LEITURA DAS PLANILHAS
+# ============================================================
 
 def ler_excel(conteudo, nome_arquivo):
-    """Lê todas as planilhas Excel dentro do arquivo."""
 
-    resultados = []
+    registros = []
 
     try:
 
@@ -133,13 +255,17 @@ def ler_excel(conteudo, nome_arquivo):
 
         for nome_planilha in workbook.sheetnames:
 
-            planilha = workbook[nome_planilha]
+            planilha = workbook[
+                nome_planilha
+            ]
 
-            textos = []
+            numero_linha = 0
 
             for linha in planilha.iter_rows(
                 values_only=True
             ):
+
+                numero_linha += 1
 
                 valores = []
 
@@ -147,37 +273,98 @@ def ler_excel(conteudo, nome_arquivo):
 
                     if valor is not None:
 
-                        valores.append(
-                            str(valor)
-                        )
+                        texto = str(valor).strip()
 
-                if valores:
+                        if texto:
 
-                    textos.append(
-                        " | ".join(valores)
-                    )
+                            valores.append(texto)
 
-            texto_final = "\n".join(textos)
+                if not valores:
+                    continue
 
-            if texto_final.strip():
+                texto_linha = " | ".join(
+                    valores
+                )
 
-                resultados.append({
+                registros.append({
                     "arquivo": nome_arquivo,
                     "planilha": nome_planilha,
-                    "texto": texto_final
+                    "linha": numero_linha,
+                    "texto": texto_linha
                 })
 
         workbook.close()
 
     except Exception as erro:
 
-        resultados.append({
+        registros.append({
             "arquivo": nome_arquivo,
             "planilha": "ERRO",
-            "texto": f"Não foi possível ler o arquivo: {erro}"
+            "linha": 0,
+            "texto": f"Erro: {erro}"
         })
 
-    return resultados
+    return registros
+
+
+# ============================================================
+# CONSOLIDAR RESULTADOS POR APR
+# ============================================================
+
+def consolidar_resultados(
+    resultados,
+    quantidade
+):
+
+    grupos = defaultdict(list)
+
+    for resultado in resultados:
+
+        grupos[
+            resultado["arquivo"]
+        ].append(resultado)
+
+    aprs = []
+
+    for arquivo, linhas in grupos.items():
+
+        linhas.sort(
+            key=lambda x: x["score"],
+            reverse=True
+        )
+
+        melhor_linha = linhas[0]
+
+        # Penaliza ligeiramente resultados
+        # baseados em apenas uma ocorrência
+        ocorrencias = len(linhas)
+
+        bonus_ocorrencia = min(
+            ocorrencias * 1.5,
+            8
+        )
+
+        score_final = min(
+            melhor_linha["score"]
+            + bonus_ocorrencia,
+            100
+        )
+
+        aprs.append({
+            "arquivo": arquivo,
+            "planilha": melhor_linha["planilha"],
+            "linha": melhor_linha["linha"],
+            "score": score_final,
+            "melhor_trecho": melhor_linha["texto"],
+            "ocorrencias": ocorrencias
+        })
+
+    aprs.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    return aprs[:quantidade]
 
 
 # ============================================================
@@ -197,7 +384,10 @@ arquivo_zip = st.file_uploader(
 
 if arquivo_zip:
 
-    tamanho_mb = arquivo_zip.size / (1024 * 1024)
+    tamanho_mb = (
+        arquivo_zip.size /
+        (1024 * 1024)
+    )
 
     st.success(
         f"Arquivo recebido: **{arquivo_zip.name}** "
@@ -211,7 +401,7 @@ if arquivo_zip:
 
         inicio = time.time()
 
-        base = []
+        registros_base = []
 
         progresso = st.progress(0)
 
@@ -232,10 +422,14 @@ if arquivo_zip:
                     if nome.lower().endswith(
                         (".xlsx", ".xlsm")
                     )
-                    and not nome.startswith("__MACOSX")
+                    and not nome.startswith(
+                        "__MACOSX"
+                    )
                 ]
 
-                total = len(arquivos_excel)
+                total = len(
+                    arquivos_excel
+                )
 
                 if total == 0:
 
@@ -265,17 +459,30 @@ if arquivo_zip:
                             nome_arquivo
                         )
 
-                        base.extend(dados)
+                        registros_base.extend(
+                            dados
+                        )
 
                         progresso.progress(
                             contador / total
                         )
 
-            tempo = time.time() - inicio
+            tempo = (
+                time.time() -
+                inicio
+            )
 
-            st.session_state["base_aprs"] = base
-            st.session_state["quantidade_arquivos"] = total
-            st.session_state["tempo_indexacao"] = tempo
+            st.session_state[
+                "registros_base"
+            ] = registros_base
+
+            st.session_state[
+                "quantidade_arquivos"
+            ] = total
+
+            st.session_state[
+                "tempo_indexacao"
+            ] = tempo
 
             status.empty()
 
@@ -287,18 +494,21 @@ if arquivo_zip:
             col1, col2, col3 = st.columns(3)
 
             with col1:
+
                 st.metric(
                     "Arquivos Excel",
                     total
                 )
 
             with col2:
+
                 st.metric(
-                    "Planilhas indexadas",
-                    len(base)
+                    "Linhas indexadas",
+                    len(registros_base)
                 )
 
             with col3:
+
                 st.metric(
                     "Tempo",
                     f"{tempo:.1f}s"
@@ -315,11 +525,13 @@ if arquivo_zip:
 # PESQUISA
 # ============================================================
 
-if "base_aprs" in st.session_state:
+if "registros_base" in st.session_state:
 
     st.divider()
 
-    st.header("🔎 2. Pesquisar na base de APRs")
+    st.header(
+        "🔎 2. Pesquisar na base de APRs"
+    )
 
     atividade = st.text_input(
         "Digite a atividade para pesquisar:",
@@ -350,35 +562,35 @@ if "base_aprs" in st.session_state:
 
             inicio_pesquisa = time.time()
 
-            resultados = []
+            resultados_linhas = []
 
-            for item in st.session_state["base_aprs"]:
+            for registro in st.session_state[
+                "registros_base"
+            ]:
 
-                score = similaridade(
+                score = calcular_score(
                     atividade,
-                    item["texto"]
+                    registro["texto"]
                 )
 
                 if score > 0:
 
-                    resultados.append({
+                    resultados_linhas.append({
                         "score": score,
-                        "arquivo": item["arquivo"],
-                        "planilha": item["planilha"],
-                        "texto": item["texto"]
+                        "arquivo": registro["arquivo"],
+                        "planilha": registro["planilha"],
+                        "linha": registro["linha"],
+                        "texto": registro["texto"]
                     })
 
-            resultados.sort(
-                key=lambda x: x["score"],
-                reverse=True
+            resultados = consolidar_resultados(
+                resultados_linhas,
+                quantidade_resultados
             )
 
-            resultados = resultados[
-                :quantidade_resultados
-            ]
-
             tempo_pesquisa = (
-                time.time() - inicio_pesquisa
+                time.time()
+                - inicio_pesquisa
             )
 
             st.success(
@@ -406,7 +618,7 @@ if "base_aprs" in st.session_state:
                     with st.expander(
                         f"#{numero} — "
                         f"{resultado['arquivo']} "
-                        f"— Similaridade "
+                        f"— Relevância "
                         f"{resultado['score']:.1f}%"
                     ):
 
@@ -421,15 +633,26 @@ if "base_aprs" in st.session_state:
                         )
 
                         st.write(
-                            f"**Similaridade:** "
+                            f"**Linha mais relevante:** "
+                            f"{resultado['linha']}"
+                        )
+
+                        st.write(
+                            f"**Relevância calculada:** "
                             f"{resultado['score']:.1f}%"
                         )
 
-                        st.text_area(
-                            "Conteúdo encontrado:",
-                            resultado["texto"][:5000],
-                            height=250,
-                            key=f"resultado_{numero}"
+                        st.write(
+                            f"**Ocorrências relevantes:** "
+                            f"{resultado['ocorrencias']}"
+                        )
+
+                        st.write(
+                            "**Trecho que gerou a relevância:**"
+                        )
+
+                        st.info(
+                            resultado["melhor_trecho"]
                         )
 
 
@@ -439,24 +662,30 @@ if "base_aprs" in st.session_state:
 
 st.divider()
 
-st.header("🚀 Próxima etapa do POC")
+st.header(
+    "🚀 Próxima etapa do POC"
+)
 
 st.write(
     """
-Depois de validarmos a pesquisa nas APRs reais, vamos evoluir o sistema para:
+Depois de validarmos a recuperação das APRs reais,
+vamos evoluir o sistema para:
 
-1. Encontrar automaticamente as APRs mais semelhantes;
-2. Identificar perigos e riscos relacionados;
-3. Identificar controles existentes;
-4. Consultar NRs e requisitos aplicáveis;
-5. Montar uma nova APR;
-6. Preservar o layout padrão da empresa;
-7. Gerar a APR em Excel;
-8. Medir se conseguimos atingir a meta de **≤ 5 minutos por APR**.
+1. Busca semântica com IA;
+2. Identificação automática de perigos;
+3. Identificação automática de riscos;
+4. Identificação de consequências;
+5. Identificação de controles;
+6. Consulta aos requisitos legais aplicáveis;
+7. Geração automática da nova APR;
+8. Preservação do layout padrão da empresa;
+9. Exportação para Excel;
+10. Medição da meta de **≤ 5 minutos por APR**.
 """
 )
 
 st.caption(
-    "POC — A pesquisa atual utiliza a base fornecida pelo usuário. "
-    "A geração automática por IA será implementada na próxima etapa."
+    "V4 — Motor de recuperação por relevância de linhas. "
+    "O percentual apresentado é um índice de relevância do POC, "
+    "não uma probabilidade ou garantia de similaridade técnica."
 )
