@@ -4,7 +4,6 @@ import io
 import re
 import time
 import numpy as np
-from collections import Counter
 from openpyxl import load_workbook
 from sentence_transformers import SentenceTransformer
 
@@ -29,9 +28,8 @@ st.title("🦺 Gerador de APR com IA")
 st.subheader("POC — Consulta contextual à base de APRs")
 
 st.info(
-    "V5.1 — Ranking técnico inteligente: combina "
-    "similaridade semântica, relevância técnica e "
-    "raridade dos termos na base."
+    "V5.2 — Ranking inteligente por objeto técnico, "
+    "atividade, contexto e similaridade semântica."
 )
 
 
@@ -70,37 +68,104 @@ STOPWORDS = {
     "com", "sem",
     "e", "ou",
     "que", "se",
-    "ao", "aos",
-    "à", "às",
+    "ao", "aos", "à", "às",
     "é", "ser",
-    "como",
-    "mais", "menos",
-    "sobre",
-    "entre",
-    "durante",
-    "após",
-    "antes",
-    "até",
+    "como", "mais", "menos",
+    "sobre", "entre",
+    "durante", "após",
+    "antes", "até",
     "pelo", "pela",
-    "pelos", "pelas"
+    "pelos", "pelas",
+    "um", "uma"
 }
 
 
 # ============================================================
-# TERMOS GENÉRICOS
+# TERMOS DE ATIVIDADE
+# ============================================================
+
+TERMOS_ATIVIDADE = {
+    "instalacao",
+    "instalar",
+    "montagem",
+    "montar",
+    "fixacao",
+    "fixar",
+    "execucao",
+    "executar",
+    "manutencao",
+    "manter",
+    "passagem",
+    "passar",
+    "lancamento",
+    "lancar",
+    "montagem",
+    "desmontagem",
+    "desmontar",
+    "fabricacao",
+    "fabricar",
+    "soldagem",
+    "soldar",
+    "corte",
+    "cortar",
+    "perfuracao",
+    "perfurar",
+    "transporte",
+    "movimentacao",
+    "escavacao",
+    "escavar",
+    "concretagem",
+    "concretar",
+    "montagem"
+}
+
+
+# ============================================================
+# TERMOS DE CONTEXTO
+# ============================================================
+
+TERMOS_CONTEXTO = {
+    "altura",
+    "alto",
+    "elevado",
+    "elevacao",
+    "telhado",
+    "cobertura",
+    "forro",
+    "andaime",
+    "escada",
+    "pta",
+    "plataforma",
+    "espaco",
+    "confinado",
+    "eletrico",
+    "eletrica",
+    "eletricas",
+    "energia",
+    "tensao",
+    "baixa",
+    "media",
+    "alta",
+    "solo",
+    "subterraneo",
+    "escavacao",
+    "vala",
+    "externo",
+    "interno"
+}
+
+
+# ============================================================
+# TERMOS MUITO GENÉRICOS
 # ============================================================
 
 TERMOS_GENERICOS = {
-    "instalacao",
-    "montagem",
     "servico",
-    "execucao",
     "atividade",
     "trabalho",
     "sistema",
     "processo",
     "realizacao",
-    "manutencao",
     "operacao",
     "estrutura",
     "equipamento",
@@ -108,7 +173,8 @@ TERMOS_GENERICOS = {
     "local",
     "material",
     "equipe",
-    "fixacao"
+    "obra",
+    "execucao"
 }
 
 
@@ -126,53 +192,58 @@ def normalizar(texto):
         "ã": "a",
         "â": "a",
         "ä": "a",
-
         "é": "e",
         "è": "e",
         "ê": "e",
         "ë": "e",
-
         "í": "i",
         "ì": "i",
         "î": "i",
         "ï": "i",
-
         "ó": "o",
         "ò": "o",
         "õ": "o",
         "ô": "o",
         "ö": "o",
-
         "ú": "u",
         "ù": "u",
         "û": "u",
         "ü": "u",
-
         "ç": "c"
     }
 
     for origem, destino in substituicoes.items():
         texto = texto.replace(origem, destino)
 
-    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
-    texto = re.sub(r"\s+", " ", texto)
+    texto = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        texto
+    )
+
+    texto = re.sub(
+        r"\s+",
+        " ",
+        texto
+    )
 
     return texto.strip()
 
 
 # ============================================================
-# VARIANTES SINGULAR / PLURAL
+# VARIANTES DE TERMOS
 # ============================================================
 
 def variantes_termo(termo):
 
     variantes = {termo}
 
-    # Ex.: eletrocalhas -> eletrocalha
     if termo.endswith("s") and len(termo) > 4:
-        variantes.add(termo[:-1])
+        variantes.add(
+            termo[:-1]
+        )
 
-    # Ex.: instalações -> instalacao
+    # instalações -> instalacao
     if termo.endswith("coes") and len(termo) > 6:
         variantes.add(
             termo[:-4] + "cao"
@@ -182,303 +253,310 @@ def variantes_termo(termo):
 
 
 # ============================================================
-# TOKENIZAÇÃO
+# TOKENS
 # ============================================================
 
 def obter_tokens(texto):
 
-    texto = normalizar(texto)
+    tokens = normalizar(
+        texto
+    ).split()
 
-    tokens = texto.split()
-
-    tokens = [
+    return [
         token
         for token in tokens
         if token not in STOPWORDS
         and len(token) > 2
     ]
 
-    return tokens
-
 
 # ============================================================
-# TERMOS TÉCNICOS
+# CLASSIFICAÇÃO DA CONSULTA
 # ============================================================
 
-def peso_base_termo(termo):
+def classificar_consulta(consulta):
 
-    if termo in TERMOS_GENERICOS:
-        return 0.20
-
-    return 1.0
-
-
-# ============================================================
-# ÍNDICE DE RARIDADE
-# ============================================================
-
-def calcular_idf(df, total_documentos):
-
-    if total_documentos <= 0:
-        return 1.0
-
-    return np.log(
-        (total_documentos + 1)
-        /
-        (df + 1)
-    ) + 1
-
-
-# ============================================================
-# CRIAR ESTATÍSTICAS DA BASE
-# ============================================================
-
-def criar_estatisticas_base(base_aprs):
-
-    documentos = {}
-
-    for item in base_aprs:
-
-        arquivo = item["arquivo"]
-
-        if arquivo not in documentos:
-            documentos[arquivo] = set()
-
-        tokens = obter_tokens(
-            item["texto"]
-        )
-
-        for token in tokens:
-
-            for variante in variantes_termo(token):
-                documentos[arquivo].add(variante)
-
-
-    df = Counter()
-
-    for tokens in documentos.values():
-
-        for token in tokens:
-            df[token] += 1
-
-
-    total_documentos = len(
-        documentos
-    )
-
-
-    idf = {}
-
-    for termo, frequencia in df.items():
-
-        idf[termo] = calcular_idf(
-            frequencia,
-            total_documentos
-        )
-
-
-    return idf, total_documentos
-
-
-# ============================================================
-# SCORE TÉCNICO INTELIGENTE
-# ============================================================
-
-def calcular_score_tecnico(
-    consulta,
-    texto,
-    idf,
-    total_documentos
-):
-
-    tokens_consulta = obter_tokens(
+    tokens = obter_tokens(
         consulta
     )
 
-    if not tokens_consulta:
-        return 0.0, [], 0.0
+    objetos = []
+    atividades = []
+    contextos = []
+    outros = []
 
+    for token in tokens:
+
+        if token in TERMOS_ATIVIDADE:
+            atividades.append(token)
+
+        elif token in TERMOS_CONTEXTO:
+            contextos.append(token)
+
+        elif token in TERMOS_GENERICOS:
+            continue
+
+        else:
+            objetos.append(token)
+
+    return {
+        "objetos": objetos,
+        "atividades": atividades,
+        "contextos": contextos,
+        "outros": outros
+    }
+
+
+# ============================================================
+# VERIFICAÇÃO DE TERMO
+# ============================================================
+
+def termo_encontrado(
+    termo,
+    texto
+):
 
     texto_normalizado = normalizar(
         texto
     )
 
-    tokens_texto = set(
-        obter_tokens(texto)
-    )
+    for variante in variantes_termo(
+        termo
+    ):
+
+        if re.search(
+            r"\b"
+            + re.escape(variante)
+            + r"\b",
+            texto_normalizado
+        ):
+            return True
+
+    return False
 
 
-    pontos = 0.0
-    pontos_maximos = 0.0
+# ============================================================
+# SCORE DE GRUPO
+# ============================================================
 
-    termos_encontrados = []
+def calcular_score_grupo(
+    termos,
+    texto
+):
 
-    pesos_termos = []
+    if not termos:
+        return 0.0, []
 
+    encontrados = []
 
-    for termo in tokens_consulta:
+    for termo in termos:
 
-        variantes = variantes_termo(
-            termo
-        )
-
-
-        # ----------------------------------------------------
-        # RARIDADE
-        # ----------------------------------------------------
-
-        raridade = idf.get(
+        if termo_encontrado(
             termo,
-            calcular_idf(
-                total_documentos,
-                total_documentos
-            )
-        )
+            texto
+        ):
 
-
-        peso_base = peso_base_termo(
-            termo
-        )
-
-
-        peso = peso_base * raridade
-
-
-        # Termo técnico específico recebe bônus
-        if termo not in TERMOS_GENERICOS:
-            peso *= 1.35
-
-
-        pesos_termos.append(
-            (termo, peso)
-        )
-
-        pontos_maximos += peso
-
-
-        encontrado = False
-
-
-        # ----------------------------------------------------
-        # VERIFICAÇÃO DO TERMO
-        # ----------------------------------------------------
-
-        for variante in variantes:
-
-            if variante in tokens_texto:
-
-                encontrado = True
-                break
-
-
-        if encontrado:
-
-            termos_encontrados.append(
+            encontrados.append(
                 termo
             )
 
-            pontos += peso
+    score = (
+        len(encontrados)
+        /
+        len(termos)
+    ) * 100
+
+    return score, encontrados
 
 
-    # --------------------------------------------------------
-    # COBERTURA DOS TERMOS
-    # --------------------------------------------------------
+# ============================================================
+# SCORE DO TÍTULO
+# ============================================================
 
-    if pontos_maximos > 0:
+def calcular_score_titulo(
+    consulta,
+    arquivo,
+    planilha
+):
 
-        cobertura = (
-            pontos
-            /
-            pontos_maximos
-        ) * 100
+    titulo = (
+        f"{arquivo} {planilha}"
+    )
 
-    else:
-
-        cobertura = 0
-
-
-    # --------------------------------------------------------
-    # BÔNUS DE FRASE
-    # --------------------------------------------------------
-
-    consulta_normalizada = normalizar(
+    grupos = classificar_consulta(
         consulta
     )
 
-    # Quanto mais partes importantes da consulta aparecem
-    # próximas, maior o bônus.
-
-    tokens_importantes = [
-        termo
-        for termo in tokens_consulta
-        if termo not in TERMOS_GENERICOS
-    ]
+    objetos = grupos["objetos"]
+    atividades = grupos["atividades"]
+    contextos = grupos["contextos"]
 
 
-    bonus_frase = 0
+    score_objeto, _ = calcular_score_grupo(
+        objetos,
+        titulo
+    )
 
+    score_atividade, _ = calcular_score_grupo(
+        atividades,
+        titulo
+    )
 
-    if len(tokens_importantes) >= 2:
-
-        sequencias_encontradas = 0
-
-        for termo in tokens_importantes:
-
-            variantes = variantes_termo(
-                termo
-            )
-
-            if any(
-                re.search(
-                    r"\b" + re.escape(v) + r"\b",
-                    texto_normalizado
-                )
-                for v in variantes
-            ):
-                sequencias_encontradas += 1
-
-
-        if sequencias_encontradas >= 2:
-            bonus_frase = 10
-
-        if sequencias_encontradas >= 3:
-            bonus_frase = 15
-
-
-    score = min(
-        100,
-        cobertura + bonus_frase
+    score_contexto, _ = calcular_score_grupo(
+        contextos,
+        titulo
     )
 
 
-    # --------------------------------------------------------
-    # TERMO PRINCIPAL
-    # --------------------------------------------------------
+    # O título recebe peso muito alto
+    score = (
+        score_objeto * 0.60
+        +
+        score_atividade * 0.25
+        +
+        score_contexto * 0.15
+    )
 
-    if tokens_importantes:
 
-        termo_principal = max(
-            tokens_importantes,
-            key=lambda x: idf.get(
-                x,
-                1.0
-            )
+    return min(
+        score,
+        100
+    )
+
+
+# ============================================================
+# SCORE TÉCNICO DO CONTEÚDO
+# ============================================================
+
+def calcular_score_tecnico(
+    consulta,
+    texto
+):
+
+    grupos = classificar_consulta(
+        consulta
+    )
+
+    objetos = grupos["objetos"]
+    atividades = grupos["atividades"]
+    contextos = grupos["contextos"]
+
+
+    score_objeto, objetos_encontrados = (
+        calcular_score_grupo(
+            objetos,
+            texto
         )
+    )
 
-        peso_principal = idf.get(
-            termo_principal,
-            1.0
+    score_atividade, atividades_encontradas = (
+        calcular_score_grupo(
+            atividades,
+            texto
         )
+    )
 
-    else:
+    score_contexto, contextos_encontrados = (
+        calcular_score_grupo(
+            contextos,
+            texto
+        )
+    )
 
-        peso_principal = 1.0
+
+    # OBJETO é o elemento mais importante.
+    score = (
+        score_objeto * 0.60
+        +
+        score_atividade * 0.25
+        +
+        score_contexto * 0.15
+    )
+
+
+    termos_encontrados = (
+        objetos_encontrados
+        +
+        atividades_encontradas
+        +
+        contextos_encontrados
+    )
 
 
     return (
-        score,
-        termos_encontrados,
-        peso_principal
+        min(score, 100),
+        objetos_encontrados,
+        atividades_encontradas,
+        contextos_encontrados,
+        min(score_objeto, 100)
+    )
+
+
+# ============================================================
+# PENALIZAÇÃO POR AUSÊNCIA DO OBJETO
+# ============================================================
+
+def calcular_penalizacao_objeto(
+    objetos,
+    arquivo,
+    planilha,
+    texto
+):
+
+    if not objetos:
+        return 0
+
+    titulo = (
+        f"{arquivo} {planilha}"
+    )
+
+    encontrados_titulo = [
+        termo
+        for termo in objetos
+        if termo_encontrado(
+            termo,
+            titulo
+        )
+    ]
+
+
+    encontrados_texto = [
+        termo
+        for termo in objetos
+        if termo_encontrado(
+            termo,
+            texto
+        )
+    ]
+
+
+    # Se nenhum objeto técnico aparece,
+    # aplicamos penalização forte.
+    if not encontrados_texto:
+
+        return 30
+
+
+    # Se aparece no conteúdo mas não no título,
+    # penalização moderada.
+    if not encontrados_titulo:
+
+        return 8
+
+
+    return 0
+
+
+# ============================================================
+# MODELO SEMÂNTICO
+# ============================================================
+
+@st.cache_resource
+def carregar_modelo():
+
+    return SentenceTransformer(
+        "sentence-transformers/"
+        "paraphrase-multilingual-MiniLM-L12-v2"
     )
 
 
@@ -592,10 +670,8 @@ def criar_chunks(
 
     texto = str(texto)
 
-
     if len(texto) <= tamanho:
         return [texto]
-
 
     chunks = []
 
@@ -616,7 +692,6 @@ def criar_chunks(
 
 
         if chunk.strip():
-
             chunks.append(
                 chunk.strip()
             )
@@ -637,19 +712,6 @@ def criar_chunks(
 
 
 # ============================================================
-# MODELO
-# ============================================================
-
-@st.cache_resource
-def carregar_modelo():
-
-    return SentenceTransformer(
-        "sentence-transformers/"
-        "paraphrase-multilingual-MiniLM-L12-v2"
-    )
-
-
-# ============================================================
 # PREPARAR ÍNDICE SEMÂNTICO
 # ============================================================
 
@@ -659,7 +721,6 @@ def preparar_indice_semantico(
 ):
 
     chunks = []
-
     metadados = []
 
 
@@ -718,20 +779,17 @@ def preparar_indice_semantico(
     )
 
 
-    embeddings = np.asarray(
-        embeddings,
-        dtype=np.float32
-    )
-
-
     return (
-        embeddings,
+        np.asarray(
+            embeddings,
+            dtype=np.float32
+        ),
         metadados
     )
 
 
 # ============================================================
-# BUSCA V5.1
+# BUSCA V5.2
 # ============================================================
 
 def buscar_aprs(
@@ -740,10 +798,12 @@ def buscar_aprs(
     embeddings,
     metadados,
     base_aprs,
-    idf,
-    total_documentos,
     quantidade=10
 ):
+
+    # --------------------------------------------------------
+    # EMBEDDING DA CONSULTA
+    # --------------------------------------------------------
 
     query_embedding = modelo.encode(
         [consulta],
@@ -802,18 +862,30 @@ def buscar_aprs(
                 "planilha":
                     metadados[
                         indice
-                    ]["planilha"],
-
-                "chunk":
-                    metadados[
-                        indice
-                    ]["chunk"]
+                    ]["planilha"]
 
             }
 
 
+    # --------------------------------------------------------
+    # CLASSIFICAÇÃO DA CONSULTA
+    # --------------------------------------------------------
+
+    grupos = classificar_consulta(
+        consulta
+    )
+
+    objetos = grupos["objetos"]
+    atividades = grupos["atividades"]
+    contextos = grupos["contextos"]
+
+
     resultados = []
 
+
+    # --------------------------------------------------------
+    # AVALIAR CADA APR
+    # --------------------------------------------------------
 
     for item in base_aprs:
 
@@ -835,9 +907,9 @@ def buscar_aprs(
         )
 
 
-        # ----------------------------------------------------
+        # -----------------------------------------------
         # SEMÂNTICA
-        # ----------------------------------------------------
+        # -----------------------------------------------
 
         score_semantico = max(
             0,
@@ -858,93 +930,115 @@ def buscar_aprs(
         )
 
 
-        # ----------------------------------------------------
+        # -----------------------------------------------
         # TÉCNICO
-        # ----------------------------------------------------
+        # -----------------------------------------------
 
         (
             score_tecnico,
-            termos,
-            peso_principal
+            objetos_encontrados,
+            atividades_encontradas,
+            contextos_encontrados,
+            score_objeto
         ) = calcular_score_tecnico(
             consulta,
-            item["texto"],
-            idf,
-            total_documentos
-        )
-
-
-        # ----------------------------------------------------
-        # SCORE HÍBRIDO V5.1
-        # ----------------------------------------------------
-
-        score_hibrido = (
-            score_semantico * 0.55
-            +
-            score_tecnico * 0.45
-        )
-
-
-        # ----------------------------------------------------
-        # BÔNUS PARA TERMO TÉCNICO PRINCIPAL
-        # ----------------------------------------------------
-
-        tokens_consulta = obter_tokens(
-            consulta
-        )
-
-
-        termos_especificos = [
-            termo
-            for termo in tokens_consulta
-            if termo not in TERMOS_GENERICOS
-        ]
-
-
-        texto_normalizado = normalizar(
             item["texto"]
         )
 
 
-        principal_encontrado = False
+        # -----------------------------------------------
+        # TÍTULO
+        # -----------------------------------------------
 
-
-        if termos_especificos:
-
-            principal = max(
-                termos_especificos,
-                key=lambda x: idf.get(
-                    x,
-                    1.0
-                )
+        score_titulo = (
+            calcular_score_titulo(
+                consulta,
+                arquivo,
+                item["planilha"]
             )
+        )
 
 
-            for variante in variantes_termo(
-                principal
-            ):
+        # -----------------------------------------------
+        # PENALIZAÇÃO
+        # -----------------------------------------------
 
-                if re.search(
-                    r"\b"
-                    +
-                    re.escape(variante)
-                    +
-                    r"\b",
-                    texto_normalizado
-                ):
-
-                    principal_encontrado = True
-                    break
+        penalizacao = (
+            calcular_penalizacao_objeto(
+                objetos,
+                arquivo,
+                item["planilha"],
+                item["texto"]
+            )
+        )
 
 
-        if principal_encontrado:
+        # -----------------------------------------------
+        # ÍNDICE V5.2
+        # -----------------------------------------------
+        #
+        # Objeto técnico:      30%
+        # Título da APR:       25%
+        # Conteúdo técnico:   20%
+        # Semântica:           25%
+        #
+        # -----------------------------------------------
 
-            score_hibrido += 5
+        indice = (
+
+            score_objeto * 0.30
+
+            +
+
+            score_titulo * 0.25
+
+            +
+
+            score_tecnico * 0.20
+
+            +
+
+            score_semantico * 0.25
+
+        )
 
 
-        score_hibrido = min(
-            score_hibrido,
-            100
+        indice -= penalizacao
+
+
+        # -----------------------------------------------
+        # BÔNUS DE CONVERGÊNCIA
+        # -----------------------------------------------
+
+        # Se objeto + atividade + contexto aparecem,
+        # temos forte convergência.
+
+        if (
+            objetos_encontrados
+            and
+            atividades_encontradas
+            and
+            contextos_encontrados
+        ):
+
+            indice += 5
+
+
+        elif (
+            objetos_encontrados
+            and
+            atividades_encontradas
+        ):
+
+            indice += 3
+
+
+        indice = max(
+            0,
+            min(
+                indice,
+                100
+            )
         )
 
 
@@ -959,14 +1053,26 @@ def buscar_aprs(
             "score_semantico":
                 score_semantico,
 
+            "score_objeto":
+                score_objeto,
+
             "score_tecnico":
                 score_tecnico,
 
-            "score_hibrido":
-                score_hibrido,
+            "score_titulo":
+                score_titulo,
 
-            "termos":
-                termos,
+            "score_hibrido":
+                indice,
+
+            "objetos":
+                objetos_encontrados,
+
+            "atividades":
+                atividades_encontradas,
+
+            "contextos":
+                contextos_encontrados,
 
             "texto":
                 item["texto"]
@@ -986,7 +1092,7 @@ def buscar_aprs(
 
 
     # --------------------------------------------------------
-    # DEDUPLICAR
+    # DEDUPLICAR POR ARQUIVO
     # --------------------------------------------------------
 
     finais = []
@@ -1027,29 +1133,17 @@ def buscar_aprs(
 if "base_aprs" not in st.session_state:
     st.session_state.base_aprs = []
 
-
 if "indice_embeddings" not in st.session_state:
     st.session_state.indice_embeddings = None
-
 
 if "metadados_embeddings" not in st.session_state:
     st.session_state.metadados_embeddings = []
 
-
 if "indice_pronto" not in st.session_state:
     st.session_state.indice_pronto = False
 
-
 if "arquivo_processado" not in st.session_state:
     st.session_state.arquivo_processado = None
-
-
-if "idf" not in st.session_state:
-    st.session_state.idf = {}
-
-
-if "total_documentos" not in st.session_state:
-    st.session_state.total_documentos = 0
 
 
 # ============================================================
@@ -1085,10 +1179,6 @@ if uploaded_file is not None:
 
         st.session_state.indice_pronto = False
 
-        st.session_state.idf = {}
-
-        st.session_state.total_documentos = 0
-
 
     if st.button(
         "📥 INDEXAR BASE FONTE",
@@ -1096,7 +1186,6 @@ if uploaded_file is not None:
     ):
 
         inicio = time.time()
-
 
         with st.spinner(
             "Lendo todos os arquivos Excel..."
@@ -1188,27 +1277,9 @@ if uploaded_file is not None:
             base_aprs
         )
 
-
         st.session_state.arquivo_processado = (
             nome_zip
         )
-
-
-        # Estatísticas para ranking técnico
-        (
-            idf,
-            total_documentos
-        ) = criar_estatisticas_base(
-            base_aprs
-        )
-
-
-        st.session_state.idf = idf
-
-        st.session_state.total_documentos = (
-            total_documentos
-        )
-
 
         st.session_state.indice_embeddings = None
 
@@ -1243,7 +1314,7 @@ if uploaded_file is not None:
 
 
 # ============================================================
-# STATUS
+# 2. BUSCA SEMÂNTICA
 # ============================================================
 
 if st.session_state.base_aprs:
@@ -1289,9 +1360,9 @@ if st.session_state.base_aprs:
 
 
     st.info(
-        "V5.1: além da semântica, "
-        "o sistema calcula a raridade dos "
-        "termos técnicos dentro da própria base."
+        "V5.2: o ranking considera "
+        "objeto técnico, atividade, contexto, "
+        "nome da APR e similaridade semântica."
     )
 
 
@@ -1300,7 +1371,7 @@ if st.session_state.base_aprs:
         type="primary"
     ):
 
-        inicio_semantico = time.time()
+        inicio = time.time()
 
 
         try:
@@ -1331,35 +1402,32 @@ if st.session_state.base_aprs:
                 embeddings
             )
 
-
             st.session_state.metadados_embeddings = (
                 metadados
             )
-
 
             st.session_state.indice_pronto = (
                 True
             )
 
 
-            tempo_semantico = (
+            tempo = (
                 time.time()
                 -
-                inicio_semantico
+                inicio
             )
 
 
             st.success(
                 f"Busca semântica preparada "
-                f"em "
-                f"{tempo_semantico:.1f} segundos."
+                f"em {tempo:.1f} segundos."
             )
 
 
         except Exception as e:
 
             st.error(
-                "Não foi possível preparar "
+                "Erro ao preparar "
                 "o índice semântico."
             )
 
@@ -1373,7 +1441,6 @@ if st.session_state.base_aprs:
 if st.session_state.indice_pronto:
 
     st.divider()
-
 
     st.header(
         "🔎 3. Consultar base de APRs"
@@ -1412,11 +1479,12 @@ if st.session_state.indice_pronto:
 
         else:
 
-            inicio_busca = time.time()
+            inicio = time.time()
 
 
             with st.spinner(
-                "Calculando compatibilidade técnica..."
+                "Analisando objeto, atividade, "
+                "contexto e semântica..."
             ):
 
                 modelo = (
@@ -1436,25 +1504,34 @@ if st.session_state.indice_pronto:
 
                     st.session_state.base_aprs,
 
-                    st.session_state.idf,
-
-                    st.session_state.total_documentos,
-
                     quantidade
 
                 )
 
 
-            tempo_busca = (
+            tempo = (
                 time.time()
                 -
-                inicio_busca
+                inicio
             )
 
 
             st.success(
                 f"Busca concluída em "
-                f"{tempo_busca:.2f} segundos."
+                f"{tempo:.2f} segundos."
+            )
+
+
+            grupos = classificar_consulta(
+                consulta
+            )
+
+
+            st.info(
+                "🎯 **Interpretação da consulta** — "
+                f"Objetos: {', '.join(grupos['objetos']) or 'nenhum'} | "
+                f"Atividades: {', '.join(grupos['atividades']) or 'nenhuma'} | "
+                f"Contextos: {', '.join(grupos['contextos']) or 'nenhum'}"
             )
 
 
@@ -1474,10 +1551,11 @@ if st.session_state.indice_pronto:
 
 
                 st.caption(
-                    "O índice híbrido é um indicador "
-                    "de compatibilidade técnica para "
-                    "priorização. Não representa "
-                    "probabilidade de equivalência."
+                    "O índice V5.2 é um indicador "
+                    "de priorização técnica. "
+                    "Não representa probabilidade "
+                    "de equivalência nem aprovação "
+                    "da APR."
                 )
 
 
@@ -1493,12 +1571,28 @@ if st.session_state.indice_pronto:
                     )
 
 
-                    col1, col2, col3 = (
-                        st.columns(3)
+                    col1, col2, col3, col4 = (
+                        st.columns(4)
                     )
 
 
                     with col1:
+
+                        st.metric(
+                            "🎯 Objeto",
+                            f"{resultado['score_objeto']:.1f}%"
+                        )
+
+
+                    with col2:
+
+                        st.metric(
+                            "📝 Título",
+                            f"{resultado['score_titulo']:.1f}%"
+                        )
+
+
+                    with col3:
 
                         st.metric(
                             "🧠 Semântica",
@@ -1506,18 +1600,10 @@ if st.session_state.indice_pronto:
                         )
 
 
-                    with col2:
+                    with col4:
 
                         st.metric(
-                            "🎯 Compatibilidade técnica",
-                            f"{resultado['score_tecnico']:.1f}%"
-                        )
-
-
-                    with col3:
-
-                        st.metric(
-                            "⭐ Índice híbrido",
+                            "⭐ Índice V5.2",
                             f"{resultado['score_hibrido']:.1f}%"
                         )
 
@@ -1528,13 +1614,35 @@ if st.session_state.indice_pronto:
                     )
 
 
-                    if resultado["termos"]:
+                    if resultado["objetos"]:
 
                         st.write(
-                            "**Termos técnicos encontrados:** "
+                            "**Objetos técnicos:** "
                             +
                             ", ".join(
-                                resultado["termos"]
+                                resultado["objetos"]
+                            )
+                        )
+
+
+                    if resultado["atividades"]:
+
+                        st.write(
+                            "**Atividades:** "
+                            +
+                            ", ".join(
+                                resultado["atividades"]
+                            )
+                        )
+
+
+                    if resultado["contextos"]:
+
+                        st.write(
+                            "**Contextos:** "
+                            +
+                            ", ".join(
+                                resultado["contextos"]
                             )
                         )
 
@@ -1572,6 +1680,6 @@ if st.session_state.indice_pronto:
 # ============================================================
 
 st.caption(
-    "POC Gerador de APR com IA — V5.1 | "
-    "Ranking Técnico Inteligente"
+    "POC Gerador de APR com IA — V5.2 | "
+    "Objeto + Atividade + Contexto + Semântica"
 )
