@@ -4,6 +4,9 @@ import io
 import re
 import time
 import numpy as np
+
+from copy import copy
+from datetime import datetime
 from openpyxl import load_workbook
 from sentence_transformers import SentenceTransformer
 
@@ -26,12 +29,13 @@ st.set_page_config(
 st.title("🦺 Gerador de APR com IA")
 
 st.subheader(
-    "POC — Consulta contextual à base de APRs"
+    "POC — Busca, consolidação e geração automática de APR"
 )
 
 st.info(
-    "V6 — Recuperação semântica + seleção da APR-base "
-    "+ extração estruturada do conhecimento técnico."
+    "V7.0 — O sistema encontra APRs de referência, "
+    "consolida informações técnicas e gera uma nova APR "
+    "utilizando o modelo Excel padrão."
 )
 
 
@@ -114,7 +118,16 @@ TERMOS_ATIVIDADE = {
     "escavacao",
     "escavar",
     "concretagem",
-    "concretar"
+    "concretar",
+    "inspecao",
+    "inspecionar",
+    "limpeza",
+    "limpar",
+    "sinalizacao",
+    "sinalizar",
+    "posicionamento",
+    "posicionar",
+    "montagem"
 }
 
 
@@ -149,28 +162,6 @@ TERMOS_CONTEXTO = {
     "vala",
     "externo",
     "interno"
-}
-
-
-# ============================================================
-# TERMOS GENÉRICOS
-# ============================================================
-
-TERMOS_GENERICOS = {
-    "servico",
-    "atividade",
-    "trabalho",
-    "sistema",
-    "processo",
-    "realizacao",
-    "operacao",
-    "estrutura",
-    "equipamento",
-    "procedimento",
-    "local",
-    "material",
-    "equipe",
-    "obra"
 }
 
 
@@ -290,9 +281,6 @@ def classificar_consulta(consulta):
         elif token in TERMOS_CONTEXTO:
             contextos.append(token)
 
-        elif token in TERMOS_GENERICOS:
-            continue
-
         else:
             objetos.append(token)
 
@@ -332,7 +320,7 @@ def termo_encontrado(
 
 
 # ============================================================
-# SCORE GRUPO
+# SCORE
 # ============================================================
 
 def calcular_score_grupo(
@@ -351,6 +339,7 @@ def calcular_score_grupo(
             termo,
             texto
         ):
+
             encontrados.append(
                 termo
             )
@@ -364,10 +353,6 @@ def calcular_score_grupo(
     return score, encontrados
 
 
-# ============================================================
-# SCORE TÉCNICO
-# ============================================================
-
 def calcular_score_tecnico(
     consulta,
     texto
@@ -377,27 +362,23 @@ def calcular_score_tecnico(
         consulta
     )
 
-    objetos = grupos["objetos"]
-    atividades = grupos["atividades"]
-    contextos = grupos["contextos"]
-
-    score_objeto, objetos_encontrados = (
+    score_objeto, objetos = (
         calcular_score_grupo(
-            objetos,
+            grupos["objetos"],
             texto
         )
     )
 
-    score_atividade, atividades_encontradas = (
+    score_atividade, atividades = (
         calcular_score_grupo(
-            atividades,
+            grupos["atividades"],
             texto
         )
     )
 
-    score_contexto, contextos_encontrados = (
+    score_contexto, contextos = (
         calcular_score_grupo(
-            contextos,
+            grupos["contextos"],
             texto
         )
     )
@@ -412,16 +393,12 @@ def calcular_score_tecnico(
 
     return (
         min(score, 100),
-        objetos_encontrados,
-        atividades_encontradas,
-        contextos_encontrados,
+        objetos,
+        atividades,
+        contextos,
         min(score_objeto, 100)
     )
 
-
-# ============================================================
-# SCORE DO TÍTULO
-# ============================================================
 
 def calcular_score_titulo(
     consulta,
@@ -437,19 +414,25 @@ def calcular_score_titulo(
         consulta
     )
 
-    score_objeto, _ = calcular_score_grupo(
-        grupos["objetos"],
-        titulo
+    score_objeto, _ = (
+        calcular_score_grupo(
+            grupos["objetos"],
+            titulo
+        )
     )
 
-    score_atividade, _ = calcular_score_grupo(
-        grupos["atividades"],
-        titulo
+    score_atividade, _ = (
+        calcular_score_grupo(
+            grupos["atividades"],
+            titulo
+        )
     )
 
-    score_contexto, _ = calcular_score_grupo(
-        grupos["contextos"],
-        titulo
+    score_contexto, _ = (
+        calcular_score_grupo(
+            grupos["contextos"],
+            titulo
+        )
     )
 
     return min(
@@ -465,7 +448,7 @@ def calcular_score_titulo(
 
 
 # ============================================================
-# MODELO
+# MODELO SEMÂNTICO
 # ============================================================
 
 @st.cache_resource
@@ -478,7 +461,7 @@ def carregar_modelo():
 
 
 # ============================================================
-# LEITURA EXCEL
+# LEITURA DO EXCEL
 # ============================================================
 
 def ler_excel(
@@ -521,6 +504,7 @@ def ler_excel(
                         ).strip()
 
                         if texto:
+
                             valores.append(
                                 texto
                             )
@@ -579,6 +563,7 @@ def criar_chunks(
     texto = str(texto)
 
     if len(texto) <= tamanho:
+
         return [texto]
 
     chunks = []
@@ -598,6 +583,7 @@ def criar_chunks(
         ]
 
         if chunk.strip():
+
             chunks.append(
                 chunk.strip()
             )
@@ -609,13 +595,14 @@ def criar_chunks(
         )
 
         if inicio >= len(texto):
+
             break
 
     return chunks
 
 
 # ============================================================
-# PREPARAR ÍNDICE
+# ÍNDICE SEMÂNTICO
 # ============================================================
 
 def preparar_indice_semantico(
@@ -665,6 +652,7 @@ def preparar_indice_semantico(
             })
 
     if not chunks:
+
         return None, []
 
     embeddings = modelo.encode(
@@ -684,7 +672,7 @@ def preparar_indice_semantico(
 
 
 # ============================================================
-# BUSCA V5.2
+# BUSCA
 # ============================================================
 
 def buscar_aprs(
@@ -712,7 +700,7 @@ def buscar_aprs(
         query_embedding
     )
 
-    melhores_semanticos = {}
+    melhores = {}
 
     for indice, similaridade in enumerate(
         similaridades
@@ -723,16 +711,15 @@ def buscar_aprs(
         ]["arquivo"]
 
         if (
-            arquivo not in
-            melhores_semanticos
+            arquivo not in melhores
             or
             similaridade >
-            melhores_semanticos[
+            melhores[
                 arquivo
             ]["similaridade"]
         ):
 
-            melhores_semanticos[
+            melhores[
                 arquivo
             ] = {
 
@@ -750,19 +737,26 @@ def buscar_aprs(
 
     resultados = []
 
+    arquivos_processados = set()
+
     for item in base_aprs:
 
         arquivo = item[
             "arquivo"
         ]
 
-        if arquivo not in (
-            melhores_semanticos
-        ):
+        if arquivo in arquivos_processados:
+            continue
+
+        arquivos_processados.add(
+            arquivo
+        )
+
+        if arquivo not in melhores:
             continue
 
         similaridade = (
-            melhores_semanticos[
+            melhores[
                 arquivo
             ]["similaridade"]
         )
@@ -780,8 +774,7 @@ def buscar_aprs(
                     /
                     2
                 )
-                *
-                100
+                * 100
             )
         )
 
@@ -819,9 +812,11 @@ def buscar_aprs(
             and atividades
             and contextos
         ):
+
             indice += 5
 
         elif objetos and atividades:
+
             indice += 3
 
         indice = max(
@@ -875,179 +870,953 @@ def buscar_aprs(
         reverse=True
     )
 
-    finais = []
-
-    arquivos_vistos = set()
-
-    for resultado in resultados:
-
-        if (
-            resultado["arquivo"]
-            in arquivos_vistos
-        ):
-            continue
-
-        arquivos_vistos.add(
-            resultado["arquivo"]
-        )
-
-        finais.append(
-            resultado
-        )
-
-        if len(finais) >= quantidade:
-            break
-
-    return finais
+    return resultados[:quantidade]
 
 
 # ============================================================
-# EXTRAÇÃO ESTRUTURADA
+# CANDIDATOS PARA GERAÇÃO
 # ============================================================
 
-CATEGORIAS_EXTRACAO = {
-
-    "Etapas da atividade": [
-        "etapa",
-        "passo",
-        "sequencia",
-        "procedimento",
-        "execucao",
-        "atividade"
-    ],
-
-    "Perigos": [
-        "perigo",
-        "fonte de perigo",
-        "agente"
-    ],
-
-    "Riscos": [
-        "risco",
-        "riscos"
-    ],
-
-    "Consequências": [
-        "consequencia",
-        "consequências",
-        "lesao",
-        "acidente",
-        "danos"
-    ],
-
-    "Medidas de controle": [
-        "medida de controle",
-        "medidas de controle",
-        "controle",
-        "preventiva",
-        "prevencao",
-        "prevenção"
-    ],
-
-    "EPC": [
-        "epc",
-        "proteção coletiva",
-        "protecao coletiva"
-    ],
-
-    "EPI": [
-        "epi",
-        "equipamento de proteção individual",
-        "equipamento de protecao individual"
-    ],
-
-    "Requisitos legais": [
-        "nr-",
-        "nr ",
-        "norma",
-        "legislação",
-        "legislacao",
-        "requisito legal"
-    ]
+TERMOS_TAREFA = {
+    "montagem",
+    "instalação",
+    "instalacao",
+    "fixação",
+    "fixacao",
+    "inspeção",
+    "inspecao",
+    "preparação",
+    "preparacao",
+    "acesso",
+    "movimentação",
+    "movimentacao",
+    "transporte",
+    "corte",
+    "perfuração",
+    "perfuracao",
+    "passagem",
+    "lançamento",
+    "lancamento",
+    "posicionamento",
+    "limpeza",
+    "desmontagem",
+    "sinalização",
+    "sinalizacao",
+    "utilização",
+    "utilizacao",
+    "execução",
+    "execucao"
 }
 
 
-def classificar_linha(
+TERMOS_RISCO = {
+    "queda",
+    "choque",
+    "elétrico",
+    "eletrico",
+    "corte",
+    "prensamento",
+    "esmagamento",
+    "atropelamento",
+    "colisão",
+    "colisao",
+    "projeção",
+    "projecao",
+    "incêndio",
+    "incendio",
+    "explosão",
+    "explosao",
+    "ruído",
+    "ruido",
+    "vibração",
+    "vibracao",
+    "ergonômico",
+    "ergonomico",
+    "exposição",
+    "exposicao",
+    "material",
+    "ferramenta",
+    "objetos",
+    "lesão",
+    "lesao",
+    "acidente"
+}
+
+
+TERMOS_CONTROLE = {
+    "inspeção",
+    "inspecao",
+    "sinalização",
+    "sinalizacao",
+    "isolamento",
+    "bloqueio",
+    "desenergização",
+    "desenergizacao",
+    "autorização",
+    "autorizacao",
+    "amarração",
+    "amarracao",
+    "delimitação",
+    "delimitacao",
+    "proteção",
+    "protecao",
+    "guarda-corpo",
+    "guardacorpo",
+    "linha de vida",
+    "checklist",
+    "controle",
+    "verificação",
+    "verificacao",
+    "permissão",
+    "permissao",
+    "organização",
+    "organizacao"
+}
+
+
+TERMOS_PROTECAO = {
+    "capacete",
+    "óculos",
+    "oculos",
+    "luva",
+    "luvas",
+    "calçado",
+    "calcado",
+    "cinto",
+    "talabarte",
+    "protetor",
+    "respirador",
+    "máscara",
+    "mascara",
+    "epi",
+    "equipamento de proteção",
+    "equipamento de protecao"
+}
+
+
+TERMOS_APOIO = {
+    "nr-",
+    "nr ",
+    "procedimento",
+    "treinamento",
+    "capacitação",
+    "capacitacao",
+    "supervisão",
+    "supervisao",
+    "autorização",
+    "autorizacao",
+    "apr",
+    "instrução",
+    "instrucao",
+    "certificação",
+    "certificacao",
+    "permissão",
+    "permissao"
+}
+
+
+def linha_relevante(
     linha
 ):
 
-    linha_normalizada = normalizar(
+    texto = normalizar(
         linha
     )
 
-    categorias = []
+    if len(texto) < 12:
+        return False
 
-    for categoria, termos in (
-        CATEGORIAS_EXTRACAO.items()
-    ):
-
-        for termo in termos:
-
-            termo_normalizado = normalizar(
-                termo
-            )
-
-            if termo_normalizado in linha_normalizada:
-
-                categorias.append(
-                    categoria
-                )
-
-                break
-
-    return categorias
+    return any(
+        termo in texto
+        for termo in TERMOS_TAREFA
+    )
 
 
-def extrair_conhecimento(
-    texto
+def extrair_candidatos(
+    textos
 ):
 
-    linhas = [
-        linha.strip()
-        for linha
-        in str(texto).splitlines()
-        if linha.strip()
-    ]
+    tarefas = []
+    riscos = []
+    controles = []
+    protecoes = []
+    apoios = []
 
-    resultado = {
-        categoria: []
-        for categoria
-        in CATEGORIAS_EXTRACAO
+    for texto in textos:
+
+        linhas = [
+            x.strip()
+            for x in str(texto).splitlines()
+            if x.strip()
+        ]
+
+        for linha in linhas:
+
+            if len(linha) > 500:
+                continue
+
+            normalizada = normalizar(
+                linha
+            )
+
+            if linha_relevante(
+                linha
+            ):
+
+                tarefas.append(
+                    linha
+                )
+
+            if any(
+                termo in normalizada
+                for termo in TERMOS_RISCO
+            ):
+
+                riscos.append(
+                    linha
+                )
+
+            if any(
+                termo in normalizada
+                for termo in TERMOS_CONTROLE
+            ):
+
+                controles.append(
+                    linha
+                )
+
+            if any(
+                termo in normalizada
+                for termo in TERMOS_PROTECAO
+            ):
+
+                protecoes.append(
+                    linha
+                )
+
+            if any(
+                termo in normalizada
+                for termo in TERMOS_APOIO
+            ):
+
+                apoios.append(
+                    linha
+                )
+
+    return {
+        "tarefas": remover_duplicados(
+            tarefas
+        ),
+        "riscos": remover_duplicados(
+            riscos
+        ),
+        "controles": remover_duplicados(
+            controles
+        ),
+        "protecoes": remover_duplicados(
+            protecoes
+        ),
+        "apoios": remover_duplicados(
+            apoios
+        )
     }
 
-    linhas_sem_categoria = []
 
-    for linha in linhas:
+def remover_duplicados(
+    itens
+):
 
-        categorias = classificar_linha(
-            linha
+    resultado = []
+    vistos = set()
+
+    for item in itens:
+
+        chave = normalizar(
+            item
         )
 
-        if categorias:
+        if chave in vistos:
+            continue
 
-            for categoria in categorias:
+        vistos.add(
+            chave
+        )
 
-                if linha not in (
-                    resultado[categoria]
+        resultado.append(
+            item
+        )
+
+    return resultado
+
+
+# ============================================================
+# SIMILARIDADE ENTRE LINHAS
+# ============================================================
+
+def selecionar_semelhantes(
+    consulta,
+    candidatos,
+    modelo,
+    limite=2
+):
+
+    if not candidatos:
+
+        return []
+
+    textos = (
+        [consulta]
+        +
+        candidatos
+    )
+
+    embeddings = modelo.encode(
+        textos,
+        normalize_embeddings=True,
+        show_progress_bar=False
+    )
+
+    query = embeddings[0]
+
+    scores = np.dot(
+        embeddings[1:],
+        query
+    )
+
+    pares = list(
+        zip(
+            candidatos,
+            scores
+        )
+    )
+
+    pares.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    resultado = []
+
+    for texto, score in pares[:limite]:
+
+        resultado.append(
+            texto
+        )
+
+    return resultado
+
+
+# ============================================================
+# NÍVEL DE RISCO
+# ============================================================
+
+def identificar_nivel(
+    texto_risco
+):
+
+    texto = normalizar(
+        texto_risco
+    )
+
+    # Primeiro tenta encontrar classificação
+    # explicitamente registrada na fonte.
+
+    padroes = [
+        r"\|\s*([AMB])\s*\|",
+        r"\b(?:nivel|nível)\s*[:\-]?\s*([AMB])\b",
+        r"\b([AMB])\s*[-–]\s*(?:alto|medio|médio|baixo)\b"
+    ]
+
+    for padrao in padroes:
+
+        resultado = re.search(
+            padrao,
+            texto,
+            re.IGNORECASE
+        )
+
+        if resultado:
+
+            return resultado.group(
+                1
+            ).upper()
+
+
+    # Heurística conservadora apenas quando
+    # a fonte não apresenta a classificação.
+
+    if any(
+        termo in texto
+        for termo in [
+            "queda de altura",
+            "choque eletrico",
+            "choque elétrico",
+            "atropelamento",
+            "esmagamento",
+            "explosao",
+            "explosão"
+        ]
+    ):
+
+        return "A"
+
+
+    if any(
+        termo in texto
+        for termo in [
+            "corte",
+            "projecao",
+            "projeção",
+            "queda de material",
+            "ruido",
+            "ruído"
+        ]
+    ):
+
+        return "M"
+
+
+    return "B"
+
+
+# ============================================================
+# CONSOLIDAÇÃO
+# ============================================================
+
+def consolidar_dados(
+    resultados,
+    modelo,
+    max_linhas=16
+):
+
+    textos = [
+        resultado["texto"]
+        for resultado
+        in resultados
+    ]
+
+    candidatos = extrair_candidatos(
+        textos
+    )
+
+    if not candidatos["tarefas"]:
+
+        # Fallback:
+        # utiliza linhas mais longas do documento.
+
+        for texto in textos:
+
+            for linha in str(texto).splitlines():
+
+                linha = linha.strip()
+
+                if (
+                    25
+                    <= len(linha)
+                    <= 300
                 ):
 
-                    resultado[
-                        categoria
+                    candidatos[
+                        "tarefas"
                     ].append(
                         linha
                     )
 
-        else:
+        candidatos["tarefas"] = (
+            remover_duplicados(
+                candidatos["tarefas"]
+            )
+        )
 
-            linhas_sem_categoria.append(
-                linha
+
+    tarefas = candidatos[
+        "tarefas"
+    ][:max_linhas]
+
+
+    linhas = []
+
+
+    for tarefa in tarefas:
+
+        riscos = selecionar_semelhantes(
+            tarefa,
+            candidatos["riscos"],
+            modelo,
+            limite=2
+        )
+
+        controles = selecionar_semelhantes(
+            tarefa,
+            candidatos["controles"],
+            modelo,
+            limite=2
+        )
+
+        protecoes = selecionar_semelhantes(
+            tarefa,
+            candidatos["protecoes"],
+            modelo,
+            limite=2
+        )
+
+        apoios = selecionar_semelhantes(
+            tarefa,
+            candidatos["apoios"],
+            modelo,
+            limite=2
+        )
+
+
+        risco_texto = (
+            "\n".join(
+                [
+                    f"{i + 1}. {x}"
+                    for i, x
+                    in enumerate(riscos)
+                ]
+            )
+        )
+
+
+        controle_texto = (
+            "\n".join(
+                [
+                    f"{i + 1}. {x}"
+                    for i, x
+                    in enumerate(controles)
+                ]
+            )
+        )
+
+
+        protecao_texto = (
+            "\n".join(
+                [
+                    f"{i + 1}. {x}"
+                    for i, x
+                    in enumerate(protecoes)
+                ]
+            )
+        )
+
+
+        apoio_texto = (
+            "\n".join(
+                [
+                    f"{i + 1}. {x}"
+                    for i, x
+                    in enumerate(apoios)
+                ]
+            )
+        )
+
+
+        nivel = identificar_nivel(
+            risco_texto
+        )
+
+
+        linhas.append({
+
+            "tarefa":
+                tarefa,
+
+            "risco":
+                risco_texto
+                or
+                "Validar riscos da tarefa",
+
+            "nivel":
+                nivel,
+
+            "controle":
+                controle_texto
+                or
+                "Validar barreiras de controle",
+
+            "protecao":
+                protecao_texto
+                or
+                "Validar barreiras de proteção",
+
+            "apoio":
+                apoio_texto
+                or
+                "Validar procedimentos, treinamento e supervisão"
+
+        })
+
+
+    return linhas
+
+
+# ============================================================
+# MARCAÇÃO DE ATIVIDADE DE ALTO RISCO
+# ============================================================
+
+def detectar_alto_risco(
+    atividade
+):
+
+    texto = normalizar(
+        atividade
+    )
+
+    riscos = {
+
+        "altura":
+            "altura" in texto,
+
+        "confinado":
+            "confinado" in texto,
+
+        "materiais":
+            "material" in texto
+            or
+            "eletrocalha" in texto,
+
+        "perigosa":
+            "substancia perigosa" in texto,
+
+        "quente":
+            "quente" in texto
+            or
+            "soldagem" in texto,
+
+        "rua":
+            "rua" in texto,
+
+        "carga":
+            "içamento" in texto
+            or
+            "icamento" in texto,
+
+        "eletrico":
+            "eletrico" in texto
+            or
+            "elétrica" in texto
+            or
+            "eletricas" in texto,
+
+        "maquinas":
+            "maquinas pesadas" in texto,
+
+        "escavacao":
+            "escavacao" in texto,
+
+        "loto":
+            "loto" in texto
+
+    }
+
+    return riscos
+
+
+# ============================================================
+# PREENCHER MODELO EXCEL
+# ============================================================
+
+def preencher_modelo_excel(
+    template_bytes,
+    dados,
+    linhas_apr,
+    nome_saida
+):
+
+    workbook = load_workbook(
+        io.BytesIO(
+            template_bytes
+        )
+    )
+
+
+    nome_aba = (
+        "FORM-ST-0001-APR - Análise Pre"
+    )
+
+
+    if nome_aba not in workbook.sheetnames:
+
+        raise ValueError(
+            "A aba principal do modelo "
+            "não foi encontrada."
+        )
+
+
+    ws = workbook[
+        nome_aba
+    ]
+
+
+    # --------------------------------------------------------
+    # CABEÇALHO
+    # --------------------------------------------------------
+
+    ws["A4"] = dados.get(
+        "responsavel_atividade",
+        ""
+    )
+
+    ws["C4"] = dados.get(
+        "cargo",
+        ""
+    )
+
+    ws["H4"] = dados.get(
+        "contratante",
+        ""
+    )
+
+    ws["J4"] = dados.get(
+        "ticket",
+        ""
+    )
+
+    ws["A6"] = dados.get(
+        "empresa",
+        ""
+    )
+
+    ws["C6"] = dados.get(
+        "responsavel",
+        ""
+    )
+
+    ws["H6"] = (
+        f"Inicio: "
+        f"{dados.get('inicio', '')}"
+        f"                         "
+        f"Fim: "
+        f"{dados.get('fim', '')}"
+    )
+
+    ws["C7"] = dados.get(
+        "atividade",
+        ""
+    )
+
+    ws["C8"] = dados.get(
+        "data_center",
+        ""
+    )
+
+    ws["I8"] = dados.get(
+        "localizacao",
+        ""
+    )
+
+
+    # --------------------------------------------------------
+    # ATIVIDADES DE ALTO RISCO
+    # --------------------------------------------------------
+
+    alto_risco = detectar_alto_risco(
+        dados.get(
+            "atividade",
+            ""
+        )
+    )
+
+
+    def marcar(texto, chave):
+
+        if alto_risco.get(
+            chave,
+            False
+        ):
+
+            return re.sub(
+                r"\(\s*\)",
+                "( X )",
+                texto,
+                count=1
             )
 
-    resultado[
-        "Outras informações"
-    ] = linhas_sem_categoria
+        return texto
 
-    return resultado
+
+    ws["A10"] = marcar(
+        ws["A10"].value,
+        "altura"
+    )
+
+    ws["E10"] = marcar(
+        ws["E10"].value,
+        "confinado"
+    )
+
+    ws["I10"] = marcar(
+        ws["I10"].value,
+        "materiais"
+    )
+
+    ws["A11"] = marcar(
+        ws["A11"].value,
+        "perigosa"
+    )
+
+    ws["E11"] = marcar(
+        ws["E11"].value,
+        "quente"
+    )
+
+    ws["I11"] = marcar(
+        ws["I11"].value,
+        "rua"
+    )
+
+    ws["A12"] = marcar(
+        ws["A12"].value,
+        "carga"
+    )
+
+    ws["E12"] = marcar(
+        ws["E12"].value,
+        "eletrico"
+    )
+
+    ws["I12"] = marcar(
+        ws["I12"].value,
+        "maquinas"
+    )
+
+    ws["A13"] = marcar(
+        ws["A13"].value,
+        "loto"
+    )
+
+    ws["E13"] = marcar(
+        ws["E13"].value,
+        "escavacao"
+    )
+
+
+    # --------------------------------------------------------
+    # LIMPAR ÁREA DA APR
+    # --------------------------------------------------------
+
+    for linha in range(
+        33,
+        49
+    ):
+
+        ws.cell(
+            linha,
+            1
+        ).value = None
+
+        ws.cell(
+            linha,
+            3
+        ).value = None
+
+        ws.cell(
+            linha,
+            7
+        ).value = None
+
+        ws.cell(
+            linha,
+            8
+        ).value = None
+
+        ws.cell(
+            linha,
+            9
+        ).value = None
+
+        ws.cell(
+            linha,
+            10
+        ).value = None
+
+
+    # --------------------------------------------------------
+    # PREENCHER LINHAS
+    # --------------------------------------------------------
+
+    for indice, item in enumerate(
+        linhas_apr[:16],
+        start=33
+    ):
+
+        ws.cell(
+            indice,
+            1
+        ).value = item[
+            "tarefa"
+        ]
+
+        ws.cell(
+            indice,
+            3
+        ).value = item[
+            "risco"
+        ]
+
+        ws.cell(
+            indice,
+            7
+        ).value = item[
+            "nivel"
+        ]
+
+        ws.cell(
+            indice,
+            8
+        ).value = item[
+            "controle"
+        ]
+
+        ws.cell(
+            indice,
+            9
+        ).value = item[
+            "protecao"
+        ]
+
+        ws.cell(
+            indice,
+            10
+        ).value = item[
+            "apoio"
+        ]
+
+
+        # Preserva estilos já existentes
+        # e ajusta alinhamento.
+
+        for coluna in [
+            1, 3, 8, 9, 10
+        ]:
+
+            ws.cell(
+                indice,
+                coluna
+            ).alignment = copy(
+                ws.cell(
+                    indice,
+                    coluna
+                ).alignment
+            )
+
+
+    # --------------------------------------------------------
+    # NOME DO ARQUIVO
+    # --------------------------------------------------------
+
+    saida = io.BytesIO()
+
+    workbook.save(
+        saida
+    )
+
+    saida.seek(
+        0
+    )
+
+    return saida.getvalue()
 
 
 # ============================================================
@@ -1072,20 +1841,18 @@ if "arquivo_processado" not in st.session_state:
 if "resultados_busca" not in st.session_state:
     st.session_state.resultados_busca = []
 
-if "apr_selecionada" not in st.session_state:
-    st.session_state.apr_selecionada = None
-
-if "extracao" not in st.session_state:
-    st.session_state.extracao = None
+if "linhas_apr" not in st.session_state:
+    st.session_state.linhas_apr = []
 
 
 # ============================================================
-# 1. CARREGAR BASE
+# 1. BASE FONTE
 # ============================================================
 
 st.header(
     "📦 1. Carregar base FONTE"
 )
+
 
 uploaded_file = st.file_uploader(
     "Selecione o FONTE.zip",
@@ -1112,9 +1879,8 @@ if uploaded_file is not None:
 
         st.session_state.resultados_busca = []
 
-        st.session_state.apr_selecionada = None
+        st.session_state.linhas_apr = []
 
-        st.session_state.extracao = None
 
     if st.button(
         "📥 INDEXAR BASE FONTE",
@@ -1156,7 +1922,7 @@ if uploaded_file is not None:
                     )
                 ]
 
-                total_arquivos = len(
+                total = len(
                     arquivos_excel
                 )
 
@@ -1171,19 +1937,13 @@ if uploaded_file is not None:
 
                     try:
 
-                        arquivo_bytes = (
-                            zip_ref.read(
-                                nome
-                            )
-                        )
-
-                        dados = ler_excel(
-                            arquivo_bytes,
+                        dados_excel = ler_excel(
+                            zip_ref.read(nome),
                             nome
                         )
 
                         base_aprs.extend(
-                            dados
+                            dados_excel
                         )
 
                     except Exception as e:
@@ -1194,10 +1954,9 @@ if uploaded_file is not None:
                         )
 
                     progresso.progress(
-                        contador
-                        /
-                        total_arquivos
+                        contador / total
                     )
+
 
         st.session_state.base_aprs = (
             base_aprs
@@ -1215,35 +1974,29 @@ if uploaded_file is not None:
 
         st.session_state.resultados_busca = []
 
-        st.session_state.apr_selecionada = None
-
-        st.session_state.extracao = None
-
         tempo = (
             time.time()
             -
             inicio
         )
 
-        arquivos_unicos = len(
+        quantidade = len(
             set(
-                item["arquivo"]
-                for item in base_aprs
+                x["arquivo"]
+                for x in base_aprs
             )
         )
 
         st.success(
             f"Base indexada: "
-            f"{arquivos_unicos} arquivos "
-            f"e "
+            f"{quantidade} arquivos e "
             f"{len(base_aprs)} planilhas "
-            f"em "
-            f"{tempo:.1f} segundos."
+            f"em {tempo:.1f} segundos."
         )
 
 
 # ============================================================
-# 2. BUSCA SEMÂNTICA
+# 2. MODELO SEMÂNTICO
 # ============================================================
 
 if st.session_state.base_aprs:
@@ -1256,9 +2009,8 @@ if st.session_state.base_aprs:
 
     total_aprs = len(
         set(
-            item["arquivo"]
-            for item
-            in st.session_state.base_aprs
+            x["arquivo"]
+            for x in st.session_state.base_aprs
         )
     )
 
@@ -1280,6 +2032,7 @@ if st.session_state.base_aprs:
             total_planilhas
         )
 
+
     if st.button(
         "🚀 PREPARAR BUSCA SEMÂNTICA",
         type="primary"
@@ -1290,10 +2043,11 @@ if st.session_state.base_aprs:
         try:
 
             with st.spinner(
-                "Carregando modelo semântico..."
+                "Carregando modelo..."
             ):
 
                 modelo = carregar_modelo()
+
 
             with st.spinner(
                 "Criando índice semântico..."
@@ -1306,6 +2060,7 @@ if st.session_state.base_aprs:
                     st.session_state.base_aprs,
                     modelo
                 )
+
 
             st.session_state.indice_embeddings = (
                 embeddings
@@ -1331,8 +2086,7 @@ if st.session_state.base_aprs:
         except Exception as e:
 
             st.error(
-                "Erro ao preparar "
-                "o índice semântico."
+                "Erro ao preparar o modelo."
             )
 
             st.exception(e)
@@ -1347,11 +2101,11 @@ if st.session_state.indice_pronto:
     st.divider()
 
     st.header(
-        "🔎 3. Encontrar APRs relacionadas"
+        "🔎 3. Descrever a atividade"
     )
 
     consulta = st.text_input(
-        "Descreva a atividade:",
+        "Atividade que deseja gerar:",
         placeholder=(
             "Ex.: Montagem e fixação "
             "de eletrocalhas em altura"
@@ -1359,50 +2113,42 @@ if st.session_state.indice_pronto:
     )
 
     quantidade = st.slider(
-        "Quantidade de APRs semelhantes",
-        min_value=3,
-        max_value=20,
-        value=10
+        "Quantidade de APRs de referência",
+        3,
+        10,
+        5
     )
 
+
     if st.button(
-        "🔍 BUSCAR APRs",
+        "🔍 BUSCAR APRs DE REFERÊNCIA",
         type="primary"
     ):
 
         if not consulta.strip():
 
             st.warning(
-                "Digite uma atividade."
+                "Informe a atividade."
             )
 
         else:
 
             inicio = time.time()
 
-            with st.spinner(
-                "Analisando objeto, atividade, "
-                "contexto e semântica..."
-            ):
+            modelo = carregar_modelo()
 
-                modelo = carregar_modelo()
-
-                resultados = buscar_aprs(
-                    consulta,
-                    modelo,
-                    st.session_state.indice_embeddings,
-                    st.session_state.metadados_embeddings,
-                    st.session_state.base_aprs,
-                    quantidade
-                )
+            resultados = buscar_aprs(
+                consulta,
+                modelo,
+                st.session_state.indice_embeddings,
+                st.session_state.metadados_embeddings,
+                st.session_state.base_aprs,
+                quantidade
+            )
 
             st.session_state.resultados_busca = (
                 resultados
             )
-
-            st.session_state.apr_selecionada = None
-
-            st.session_state.extracao = None
 
             tempo = (
                 time.time()
@@ -1411,13 +2157,13 @@ if st.session_state.indice_pronto:
             )
 
             st.success(
-                f"Busca concluída em "
-                f"{tempo:.2f} segundos."
+                f"{len(resultados)} APRs encontradas "
+                f"em {tempo:.2f} segundos."
             )
 
 
 # ============================================================
-# RESULTADOS
+# 4. SELEÇÃO DAS APRs
 # ============================================================
 
 if st.session_state.resultados_busca:
@@ -1425,285 +2171,433 @@ if st.session_state.resultados_busca:
     st.divider()
 
     st.header(
-        "📋 4. APRs encontradas"
+        "🎯 4. Selecionar APRs de referência"
     )
 
-    for posicao, resultado in enumerate(
-        st.session_state.resultados_busca,
-        start=1
-    ):
+    opcoes = [
 
-        st.markdown(
-            f"### {posicao}. "
-            f"{resultado['arquivo']}"
+        f"{i + 1}. "
+        f"{r['arquivo']} "
+        f"— {r['score_hibrido']:.1f}%"
+
+        for i, r
+        in enumerate(
+            st.session_state.resultados_busca
         )
 
-        col1, col2, col3, col4 = (
-            st.columns(4)
+    ]
+
+
+    selecionadas = st.multiselect(
+        "Selecione as APRs que servirão como referência técnica:",
+        options=opcoes,
+        default=opcoes[:min(3, len(opcoes))]
+    )
+
+
+    if selecionadas:
+
+        st.info(
+            f"{len(selecionadas)} APR(s) "
+            "selecionada(s) para consolidação."
         )
 
-        with col1:
-            st.metric(
-                "🎯 Objeto",
-                f"{resultado['score_objeto']:.1f}%"
+
+        for opcao in selecionadas:
+
+            indice = opcoes.index(
+                opcao
             )
 
-        with col2:
-            st.metric(
-                "📝 Título",
-                f"{resultado['score_titulo']:.1f}%"
+            resultado = (
+                st.session_state.resultados_busca[
+                    indice
+                ]
             )
 
-        with col3:
-            st.metric(
-                "🧠 Semântica",
-                f"{resultado['score_semantico']:.1f}%"
-            )
-
-        with col4:
-            st.metric(
-                "⭐ Índice V5.2",
+            st.write(
+                f"• **{resultado['arquivo']}** "
+                f"— índice "
                 f"{resultado['score_hibrido']:.1f}%"
             )
 
-        st.write(
-            f"**Planilha:** "
-            f"{resultado['planilha']}"
-        )
-
-        if resultado["objetos"]:
-            st.write(
-                "**Objetos:** "
-                +
-                ", ".join(
-                    resultado["objetos"]
-                )
-            )
-
-        if resultado["atividades"]:
-            st.write(
-                "**Atividades:** "
-                +
-                ", ".join(
-                    resultado["atividades"]
-                )
-            )
-
-        if resultado["contextos"]:
-            st.write(
-                "**Contextos:** "
-                +
-                ", ".join(
-                    resultado["contextos"]
-                )
-            )
-
-        with st.expander(
-            "👁️ Visualizar conteúdo"
-        ):
-
-            texto = resultado["texto"]
-
-            if len(texto) > 5000:
-
-                texto = (
-                    texto[:5000]
-                    +
-                    "\n\n"
-                    "[Conteúdo reduzido]"
-                )
-
-            st.text(texto)
-
-        st.divider()
-
-
-    # ========================================================
-    # SELEÇÃO DA APR-BASE
-    # ========================================================
-
-    st.header(
-        "🎯 5. Selecionar APR-base"
-    )
-
-    opcoes = []
-
-    for indice, resultado in enumerate(
-        st.session_state.resultados_busca
-    ):
-
-        opcoes.append(
-            f"{indice + 1}. "
-            f"{resultado['arquivo']}"
-        )
-
-    selecao = st.selectbox(
-        "Escolha a APR que será utilizada como base técnica:",
-        options=opcoes
-    )
-
-
-    indice_selecionado = opcoes.index(
-        selecao
-    )
-
-    resultado_selecionado = (
-        st.session_state.resultados_busca[
-            indice_selecionado
-        ]
-    )
-
-
-    st.info(
-        f"APR-base selecionada: "
-        f"**{resultado_selecionado['arquivo']}**"
-    )
-
-
-    if st.button(
-        "🧩 EXTRAIR CONHECIMENTO DA APR",
-        type="primary"
-    ):
-
-        inicio_extracao = time.time()
-
-        with st.spinner(
-            "Extraindo informações estruturadas "
-            "da APR selecionada..."
-        ):
-
-            extracao = extrair_conhecimento(
-                resultado_selecionado["texto"]
-            )
-
-        st.session_state.apr_selecionada = (
-            resultado_selecionado
-        )
-
-        st.session_state.extracao = (
-            extracao
-        )
-
-        tempo_extracao = (
-            time.time()
-            -
-            inicio_extracao
-        )
-
-        st.success(
-            f"Extração concluída em "
-            f"{tempo_extracao:.2f} segundos."
-        )
-
 
 # ============================================================
-# 6. CONHECIMENTO EXTRAÍDO
+# 5. DADOS DA NOVA APR
 # ============================================================
 
-if st.session_state.extracao:
+if st.session_state.resultados_busca:
 
     st.divider()
 
     st.header(
-        "🧠 6. Conhecimento técnico extraído"
+        "📝 5. Dados da nova APR"
     )
 
-    apr = (
-        st.session_state.apr_selecionada
-    )
+    col1, col2 = st.columns(2)
 
-    st.success(
-        f"Fonte utilizada: "
-        f"{apr['arquivo']} — "
-        f"{apr['planilha']}"
-    )
+    with col1:
 
+        responsavel_atividade = st.text_input(
+            "Responsável pela atividade",
+            ""
+        )
 
-    # --------------------------------------------------------
-    # RESUMO DA EXTRAÇÃO
-    # --------------------------------------------------------
+        cargo = st.text_input(
+            "Cargo",
+            ""
+        )
 
-    extracao = (
-        st.session_state.extracao
-    )
+        contratante = st.text_input(
+            "Contratante",
+            ""
+        )
 
+        ticket = st.text_input(
+            "Nº Ticket",
+            ""
+        )
 
-    categorias_principais = [
-        "Etapas da atividade",
-        "Perigos",
-        "Riscos",
-        "Consequências",
-        "Medidas de controle",
-        "EPC",
-        "EPI",
-        "Requisitos legais"
-    ]
-
-
-    for categoria in categorias_principais:
-
-        itens = extracao.get(
-            categoria,
-            []
+        empresa = st.text_input(
+            "Nome da empresa contratante",
+            ""
         )
 
 
-        st.subheader(
-            categoria
+    with col2:
+
+        responsavel = st.text_input(
+            "Responsável",
+            ""
+        )
+
+        inicio_execucao = st.text_input(
+            "Início",
+            ""
+        )
+
+        fim_execucao = st.text_input(
+            "Fim",
+            ""
+        )
+
+        data_center = st.text_input(
+            "Data Center",
+            ""
+        )
+
+        localizacao = st.text_input(
+            "Localização",
+            ""
         )
 
 
-        if not itens:
+    atividade = st.text_area(
+        "Descrição do serviço ou atividade",
+        value="",
+        height=80
+    )
 
-            st.caption(
-                "Nenhuma informação "
-                "identificada explicitamente "
-                "na estrutura textual analisada."
+
+# ============================================================
+# 6. MODELO EXCEL
+# ============================================================
+
+if st.session_state.resultados_busca:
+
+    st.divider()
+
+    st.header(
+        "📄 6. Modelo Excel de saída"
+    )
+
+    template_file = st.file_uploader(
+        "Envie o modelo oficial da APR",
+        type=["xlsx"],
+        key="template_apr"
+    )
+
+
+    if template_file:
+
+        st.success(
+            f"Modelo carregado: "
+            f"{template_file.name}"
+        )
+
+        st.caption(
+            "O sistema utilizará esse arquivo como "
+            "template e preservará as demais abas "
+            "do modelo."
+        )
+
+
+# ============================================================
+# 7. GERAR APR
+# ============================================================
+
+if (
+    st.session_state.resultados_busca
+    and
+    template_file is not None
+    and
+    selecionadas
+):
+
+    st.divider()
+
+    st.header(
+        "🚀 7. Gerar APR"
+    )
+
+    st.warning(
+        "A APR gerada nesta V7.0 é uma versão "
+        "preliminar assistida, baseada nas APRs "
+        "selecionadas. Deve ser revisada e aprovada "
+        "por profissional responsável antes da execução."
+    )
+
+
+    if st.button(
+        "🚀 GERAR APR NO MODELO PADRÃO",
+        type="primary"
+    ):
+
+        if not atividade.strip():
+
+            st.error(
+                "Informe a descrição "
+                "da atividade."
             )
 
         else:
 
-            for item in itens:
+            inicio_geracao = time.time()
 
-                st.markdown(
-                    f"- {item}"
+
+            modelo = carregar_modelo()
+
+
+            # ------------------------------------------------
+            # RECUPERAR APRs SELECIONADAS
+            # ------------------------------------------------
+
+            resultados_selecionados = []
+
+
+            for opcao in selecionadas:
+
+                indice = opcoes.index(
+                    opcao
+                )
+
+                resultados_selecionados.append(
+                    st.session_state.resultados_busca[
+                        indice
+                    ]
                 )
 
 
-    # --------------------------------------------------------
-    # OUTRAS INFORMAÇÕES
-    # --------------------------------------------------------
+            # ------------------------------------------------
+            # CONSOLIDAÇÃO
+            # ------------------------------------------------
 
-    outras = extracao.get(
-        "Outras informações",
-        []
+            with st.spinner(
+                "Consolidando tarefas, riscos "
+                "e barreiras das APRs..."
+            ):
+
+                linhas_apr = consolidar_dados(
+                    resultados_selecionados,
+                    modelo,
+                    max_linhas=16
+                )
+
+
+            st.session_state.linhas_apr = (
+                linhas_apr
+            )
+
+
+            # ------------------------------------------------
+            # DADOS
+            # ------------------------------------------------
+
+            dados = {
+
+                "responsavel_atividade":
+                    responsavel_atividade,
+
+                "cargo":
+                    cargo,
+
+                "contratante":
+                    contratante,
+
+                "ticket":
+                    ticket,
+
+                "empresa":
+                    empresa,
+
+                "responsavel":
+                    responsavel,
+
+                "inicio":
+                    inicio_execucao,
+
+                "fim":
+                    fim_execucao,
+
+                "atividade":
+                    atividade,
+
+                "data_center":
+                    data_center,
+
+                "localizacao":
+                    localizacao
+
+            }
+
+
+            # ------------------------------------------------
+            # NOME
+            # ------------------------------------------------
+
+            nome_limpo = normalizar(
+                atividade
+            )
+
+            nome_limpo = (
+                re.sub(
+                    r"\s+",
+                    "_",
+                    nome_limpo
+                )[:70]
+            )
+
+
+            nome_saida = (
+                f"APR_IA_"
+                f"{nome_limpo}.xlsx"
+            )
+
+
+            # ------------------------------------------------
+            # GERAR EXCEL
+            # ------------------------------------------------
+
+            with st.spinner(
+                "Preenchendo o modelo Excel..."
+            ):
+
+                arquivo_final = (
+                    preencher_modelo_excel(
+                        template_file.getvalue(),
+                        dados,
+                        linhas_apr,
+                        nome_saida
+                    )
+                )
+
+
+            tempo_total = (
+                time.time()
+                -
+                inicio_geracao
+            )
+
+
+            st.success(
+                f"APR gerada em "
+                f"{tempo_total:.2f} segundos."
+            )
+
+
+            st.session_state.arquivo_final = (
+                arquivo_final
+            )
+
+            st.session_state.nome_saida = (
+                nome_saida
+            )
+
+
+# ============================================================
+# 8. RESULTADO
+# ============================================================
+
+if (
+    "arquivo_final"
+    in st.session_state
+):
+
+    st.divider()
+
+    st.header(
+        "📥 8. APR gerada"
     )
 
 
-    if outras:
+    st.success(
+        "A APR foi criada utilizando "
+        "o modelo Excel fornecido."
+    )
 
-        with st.expander(
-            "📄 Outras informações da APR"
+
+    if st.session_state.linhas_apr:
+
+        st.subheader(
+            "Pré-visualização da matriz gerada"
+        )
+
+
+        dados_preview = []
+
+        for item in (
+            st.session_state.linhas_apr
         ):
 
-            for item in outras:
+            dados_preview.append({
 
-                st.markdown(
-                    f"- {item}"
-                )
+                "Descrição das tarefas":
+                    item["tarefa"],
+
+                "Riscos":
+                    item["risco"],
+
+                "Nível":
+                    item["nivel"],
+
+                "Barreira de controle":
+                    item["controle"],
+
+                "Barreira de proteção":
+                    item["protecao"],
+
+                "Barreira de apoio":
+                    item["apoio"]
+
+            })
 
 
-    # --------------------------------------------------------
-    # AVISO DE RASTREABILIDADE
-    # --------------------------------------------------------
+        st.dataframe(
+            dados_preview,
+            use_container_width=True,
+            hide_index=True
+        )
 
-    st.warning(
-        "⚠️ V6: esta etapa organiza informações "
-        "encontradas na APR selecionada. "
-        "Ela não cria, valida ou aprova riscos, "
-        "medidas de controle ou requisitos legais "
-        "que não estejam explicitamente presentes "
-        "na fonte."
+
+    st.download_button(
+        label="📥 BAIXAR APR GERADA",
+        data=st.session_state.arquivo_final,
+        file_name=st.session_state.nome_saida,
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        type="primary"
     )
 
 
@@ -1711,7 +2605,15 @@ if st.session_state.extracao:
 # RODAPÉ
 # ============================================================
 
+st.divider()
+
 st.caption(
-    "POC Gerador de APR com IA — V6 | "
-    "Busca + Seleção + Extração Estruturada"
+    "POC Gerador de APR com IA — V7.0 | "
+    "Busca + Consolidação + Geração no Modelo Padrão"
+)
+
+st.caption(
+    "⚠️ A saída é preliminar e requer revisão, "
+    "validação e aprovação conforme o processo "
+    "de Segurança do Trabalho."
 )
