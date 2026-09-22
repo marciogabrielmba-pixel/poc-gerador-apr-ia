@@ -6,7 +6,6 @@ import time
 import numpy as np
 
 from copy import copy
-from datetime import datetime
 from openpyxl import load_workbook
 from sentence_transformers import SentenceTransformer
 
@@ -21,181 +20,54 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# ============================================================
-# TÍTULO
-# ============================================================
-
 st.title("🦺 Gerador de APR com IA")
 
 st.subheader(
-    "POC — Busca, consolidação e geração automática de APR"
+    "POC — Busca, estruturação e geração de APR"
 )
 
 st.info(
-    "V7.0 — O sistema encontra APRs de referência, "
-    "consolida informações técnicas e gera uma nova APR "
-    "utilizando o modelo Excel padrão."
+    "V7.1 — preserva a relação Tarefa → Risco → Nível → "
+    "Barreiras antes de gerar o Excel."
 )
 
 
 # ============================================================
-# METAS
-# ============================================================
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.caption("🎯 Meta")
-    st.metric("APRs", "10 APRs")
-
-with col2:
-    st.caption("🎯 Meta")
-    st.metric("Tempo total", "50 minutos")
-
-with col3:
-    st.caption("⚡ Meta por APR")
-    st.metric("Tempo", "≤ 5 minutos")
-
-
-st.divider()
-
-
-# ============================================================
-# STOPWORDS
+# FUNÇÕES BÁSICAS
 # ============================================================
 
 STOPWORDS = {
-    "a", "o", "as", "os",
-    "um", "uma", "uns", "umas",
+    "a", "o", "as", "os", "um", "uma",
     "de", "da", "do", "das", "dos",
     "em", "no", "na", "nos", "nas",
-    "por", "para",
-    "com", "sem",
+    "por", "para", "com", "sem",
     "e", "ou", "que", "se",
     "ao", "aos", "à", "às",
     "é", "ser", "como",
     "mais", "menos",
     "sobre", "entre",
-    "durante", "após",
-    "antes", "até",
-    "pelo", "pela",
+    "durante", "após", "antes",
+    "até", "pelo", "pela",
     "pelos", "pelas"
 }
 
 
-# ============================================================
-# TERMOS DE ATIVIDADE
-# ============================================================
-
-TERMOS_ATIVIDADE = {
-    "instalacao",
-    "instalar",
-    "montagem",
-    "montar",
-    "fixacao",
-    "fixar",
-    "execucao",
-    "executar",
-    "manutencao",
-    "manter",
-    "passagem",
-    "passar",
-    "lancamento",
-    "lancar",
-    "desmontagem",
-    "desmontar",
-    "fabricacao",
-    "fabricar",
-    "soldagem",
-    "soldar",
-    "corte",
-    "cortar",
-    "perfuracao",
-    "perfurar",
-    "transporte",
-    "movimentacao",
-    "escavacao",
-    "escavar",
-    "concretagem",
-    "concretar",
-    "inspecao",
-    "inspecionar",
-    "limpeza",
-    "limpar",
-    "sinalizacao",
-    "sinalizar",
-    "posicionamento",
-    "posicionar",
-    "montagem"
-}
-
-
-# ============================================================
-# TERMOS DE CONTEXTO
-# ============================================================
-
-TERMOS_CONTEXTO = {
-    "altura",
-    "alto",
-    "elevado",
-    "elevacao",
-    "telhado",
-    "cobertura",
-    "forro",
-    "andaime",
-    "escada",
-    "pta",
-    "plataforma",
-    "espaco",
-    "confinado",
-    "eletrico",
-    "eletrica",
-    "eletricas",
-    "energia",
-    "tensao",
-    "baixa",
-    "media",
-    "alta",
-    "solo",
-    "subterraneo",
-    "vala",
-    "externo",
-    "interno"
-}
-
-
-# ============================================================
-# NORMALIZAÇÃO
-# ============================================================
-
 def normalizar(texto):
 
-    texto = str(texto).lower()
+    texto = str(texto or "").lower()
 
     substituicoes = {
         "á": "a",
         "à": "a",
         "ã": "a",
         "â": "a",
-        "ä": "a",
         "é": "e",
-        "è": "e",
         "ê": "e",
-        "ë": "e",
         "í": "i",
-        "ì": "i",
-        "î": "i",
-        "ï": "i",
         "ó": "o",
-        "ò": "o",
         "õ": "o",
         "ô": "o",
-        "ö": "o",
         "ú": "u",
-        "ù": "u",
-        "û": "u",
-        "ü": "u",
         "ç": "c"
     }
 
@@ -206,7 +78,7 @@ def normalizar(texto):
         )
 
     texto = re.sub(
-        r"[^a-z0-9\s]",
+        r"[^a-z0-9\s|:/().\-]",
         " ",
         texto
     )
@@ -220,231 +92,37 @@ def normalizar(texto):
     return texto.strip()
 
 
-# ============================================================
-# TOKENS
-# ============================================================
-
-def obter_tokens(texto):
-
-    tokens = normalizar(
-        texto
-    ).split()
+def tokens(texto):
 
     return [
-        token
-        for token in tokens
-        if token not in STOPWORDS
-        and len(token) > 2
+        x
+        for x in normalizar(texto)
+        .replace("|", " ")
+        .split()
+        if x not in STOPWORDS
+        and len(x) > 2
     ]
 
 
-# ============================================================
-# VARIANTES
-# ============================================================
+def remover_duplicados(lista):
 
-def variantes_termo(termo):
+    resultado = []
+    vistos = set()
 
-    variantes = {termo}
+    for item in lista:
 
-    if termo.endswith("s") and len(termo) > 4:
-        variantes.add(
-            termo[:-1]
-        )
+        chave = normalizar(item)
 
-    if termo.endswith("coes") and len(termo) > 6:
-        variantes.add(
-            termo[:-4] + "cao"
-        )
+        if not chave:
+            continue
 
-    return variantes
+        if chave in vistos:
+            continue
 
+        vistos.add(chave)
+        resultado.append(item)
 
-# ============================================================
-# CLASSIFICAÇÃO DA CONSULTA
-# ============================================================
-
-def classificar_consulta(consulta):
-
-    tokens = obter_tokens(
-        consulta
-    )
-
-    objetos = []
-    atividades = []
-    contextos = []
-
-    for token in tokens:
-
-        if token in TERMOS_ATIVIDADE:
-            atividades.append(token)
-
-        elif token in TERMOS_CONTEXTO:
-            contextos.append(token)
-
-        else:
-            objetos.append(token)
-
-    return {
-        "objetos": objetos,
-        "atividades": atividades,
-        "contextos": contextos
-    }
-
-
-# ============================================================
-# TERMO ENCONTRADO
-# ============================================================
-
-def termo_encontrado(
-    termo,
-    texto
-):
-
-    texto_normalizado = normalizar(
-        texto
-    )
-
-    for variante in variantes_termo(
-        termo
-    ):
-
-        if re.search(
-            r"\b"
-            + re.escape(variante)
-            + r"\b",
-            texto_normalizado
-        ):
-            return True
-
-    return False
-
-
-# ============================================================
-# SCORE
-# ============================================================
-
-def calcular_score_grupo(
-    termos,
-    texto
-):
-
-    if not termos:
-        return 0.0, []
-
-    encontrados = []
-
-    for termo in termos:
-
-        if termo_encontrado(
-            termo,
-            texto
-        ):
-
-            encontrados.append(
-                termo
-            )
-
-    score = (
-        len(encontrados)
-        /
-        len(termos)
-    ) * 100
-
-    return score, encontrados
-
-
-def calcular_score_tecnico(
-    consulta,
-    texto
-):
-
-    grupos = classificar_consulta(
-        consulta
-    )
-
-    score_objeto, objetos = (
-        calcular_score_grupo(
-            grupos["objetos"],
-            texto
-        )
-    )
-
-    score_atividade, atividades = (
-        calcular_score_grupo(
-            grupos["atividades"],
-            texto
-        )
-    )
-
-    score_contexto, contextos = (
-        calcular_score_grupo(
-            grupos["contextos"],
-            texto
-        )
-    )
-
-    score = (
-        score_objeto * 0.60
-        +
-        score_atividade * 0.25
-        +
-        score_contexto * 0.15
-    )
-
-    return (
-        min(score, 100),
-        objetos,
-        atividades,
-        contextos,
-        min(score_objeto, 100)
-    )
-
-
-def calcular_score_titulo(
-    consulta,
-    arquivo,
-    planilha
-):
-
-    titulo = (
-        f"{arquivo} {planilha}"
-    )
-
-    grupos = classificar_consulta(
-        consulta
-    )
-
-    score_objeto, _ = (
-        calcular_score_grupo(
-            grupos["objetos"],
-            titulo
-        )
-    )
-
-    score_atividade, _ = (
-        calcular_score_grupo(
-            grupos["atividades"],
-            titulo
-        )
-    )
-
-    score_contexto, _ = (
-        calcular_score_grupo(
-            grupos["contextos"],
-            titulo
-        )
-    )
-
-    return min(
-        (
-            score_objeto * 0.60
-            +
-            score_atividade * 0.25
-            +
-            score_contexto * 0.15
-        ),
-        100
-    )
+    return resultado
 
 
 # ============================================================
@@ -465,766 +143,110 @@ def carregar_modelo():
 # ============================================================
 
 def ler_excel(
-    arquivo_bytes,
+    dados,
     nome_arquivo
 ):
 
-    resultados = []
+    workbook = load_workbook(
+        io.BytesIO(dados),
+        read_only=True,
+        data_only=True
+    )
 
-    try:
+    resultado = []
 
-        workbook = load_workbook(
-            io.BytesIO(
-                arquivo_bytes
-            ),
-            read_only=True,
-            data_only=True
-        )
+    for nome_planilha in workbook.sheetnames:
 
-        for nome_planilha in workbook.sheetnames:
+        ws = workbook[
+            nome_planilha
+        ]
 
-            sheet = workbook[
-                nome_planilha
-            ]
+        linhas = []
 
-            linhas = []
+        for row in ws.iter_rows(
+            values_only=True
+        ):
 
-            for row in sheet.iter_rows(
-                values_only=True
-            ):
+            valores = []
 
-                valores = []
+            for valor in row:
 
-                for valor in row:
+                if valor is not None:
 
-                    if valor is not None:
+                    texto = str(
+                        valor
+                    ).strip()
 
-                        texto = str(
-                            valor
-                        ).strip()
+                    if texto:
 
-                        if texto:
-
-                            valores.append(
-                                texto
-                            )
-
-                if valores:
-
-                    linhas.append(
-                        " | ".join(
-                            valores
+                        valores.append(
+                            texto
                         )
-                    )
 
-            texto_planilha = (
-                "\n".join(
-                    linhas
-                ).strip()
-            )
+            if valores:
 
-            if texto_planilha:
-
-                resultados.append({
-
-                    "arquivo":
-                        nome_arquivo,
-
-                    "planilha":
-                        nome_planilha,
-
-                    "texto":
-                        texto_planilha
-
-                })
-
-        workbook.close()
-
-    except Exception as e:
-
-        st.warning(
-            f"Erro ao ler "
-            f"{nome_arquivo}: {e}"
-        )
-
-    return resultados
-
-
-# ============================================================
-# CHUNKS
-# ============================================================
-
-def criar_chunks(
-    texto,
-    tamanho=1800,
-    sobreposicao=250
-):
-
-    texto = str(texto)
-
-    if len(texto) <= tamanho:
-
-        return [texto]
-
-    chunks = []
-
-    inicio = 0
-
-    while inicio < len(texto):
-
-        fim = (
-            inicio
-            +
-            tamanho
-        )
-
-        chunk = texto[
-            inicio:fim
-        ]
-
-        if chunk.strip():
-
-            chunks.append(
-                chunk.strip()
-            )
-
-        inicio = (
-            fim
-            -
-            sobreposicao
-        )
-
-        if inicio >= len(texto):
-
-            break
-
-    return chunks
-
-
-# ============================================================
-# ÍNDICE SEMÂNTICO
-# ============================================================
-
-def preparar_indice_semantico(
-    base_aprs,
-    modelo
-):
-
-    chunks = []
-    metadados = []
-
-    for item in base_aprs:
-
-        partes = criar_chunks(
-            item["texto"]
-        )
-
-        for numero, parte in enumerate(
-            partes
-        ):
-
-            texto_embedding = (
-                f"Arquivo: "
-                f"{item['arquivo']}\n"
-                f"Planilha: "
-                f"{item['planilha']}\n"
-                f"{parte}"
-            )
-
-            chunks.append(
-                texto_embedding
-            )
-
-            metadados.append({
-
-                "arquivo":
-                    item["arquivo"],
-
-                "planilha":
-                    item["planilha"],
-
-                "texto":
-                    item["texto"],
-
-                "chunk":
-                    numero
-
-            })
-
-    if not chunks:
-
-        return None, []
-
-    embeddings = modelo.encode(
-        chunks,
-        batch_size=16,
-        show_progress_bar=False,
-        normalize_embeddings=True
-    )
-
-    return (
-        np.asarray(
-            embeddings,
-            dtype=np.float32
-        ),
-        metadados
-    )
-
-
-# ============================================================
-# BUSCA
-# ============================================================
-
-def buscar_aprs(
-    consulta,
-    modelo,
-    embeddings,
-    metadados,
-    base_aprs,
-    quantidade=10
-):
-
-    query_embedding = modelo.encode(
-        [consulta],
-        normalize_embeddings=True,
-        show_progress_bar=False
-    )[0]
-
-    query_embedding = np.asarray(
-        query_embedding,
-        dtype=np.float32
-    )
-
-    similaridades = np.dot(
-        embeddings,
-        query_embedding
-    )
-
-    melhores = {}
-
-    for indice, similaridade in enumerate(
-        similaridades
-    ):
-
-        arquivo = metadados[
-            indice
-        ]["arquivo"]
-
-        if (
-            arquivo not in melhores
-            or
-            similaridade >
-            melhores[
-                arquivo
-            ]["similaridade"]
-        ):
-
-            melhores[
-                arquivo
-            ] = {
-
-                "similaridade":
-                    float(
-                        similaridade
-                    ),
-
-                "planilha":
-                    metadados[
-                        indice
-                    ]["planilha"]
-
-            }
-
-    resultados = []
-
-    arquivos_processados = set()
-
-    for item in base_aprs:
-
-        arquivo = item[
-            "arquivo"
-        ]
-
-        if arquivo in arquivos_processados:
-            continue
-
-        arquivos_processados.add(
-            arquivo
-        )
-
-        if arquivo not in melhores:
-            continue
-
-        similaridade = (
-            melhores[
-                arquivo
-            ]["similaridade"]
-        )
-
-        score_semantico = max(
-            0,
-            min(
-                100,
-                (
-                    (
-                        similaridade
-                        +
-                        1
-                    )
-                    /
-                    2
+                linhas.append(
+                    valores
                 )
-                * 100
-            )
+
+        texto_completo = "\n".join(
+            " | ".join(linha)
+            for linha in linhas
         )
 
-        (
-            score_tecnico,
-            objetos,
-            atividades,
-            contextos,
-            score_objeto
-        ) = calcular_score_tecnico(
-            consulta,
-            item["texto"]
+        registros = extrair_registros(
+            linhas
         )
 
-        score_titulo = (
-            calcular_score_titulo(
-                consulta,
-                arquivo,
-                item["planilha"]
-            )
-        )
-
-        indice = (
-            score_objeto * 0.30
-            +
-            score_titulo * 0.25
-            +
-            score_tecnico * 0.20
-            +
-            score_semantico * 0.25
-        )
-
-        if (
-            objetos
-            and atividades
-            and contextos
-        ):
-
-            indice += 5
-
-        elif objetos and atividades:
-
-            indice += 3
-
-        indice = max(
-            0,
-            min(
-                indice,
-                100
-            )
-        )
-
-        resultados.append({
+        resultado.append({
 
             "arquivo":
-                arquivo,
+                nome_arquivo,
 
             "planilha":
-                item["planilha"],
-
-            "score_semantico":
-                score_semantico,
-
-            "score_objeto":
-                score_objeto,
-
-            "score_tecnico":
-                score_tecnico,
-
-            "score_titulo":
-                score_titulo,
-
-            "score_hibrido":
-                indice,
-
-            "objetos":
-                objetos,
-
-            "atividades":
-                atividades,
-
-            "contextos":
-                contextos,
+                nome_planilha,
 
             "texto":
-                item["texto"]
+                texto_completo,
+
+            "registros":
+                registros
 
         })
 
-    resultados.sort(
-        key=lambda x:
-            x["score_hibrido"],
-        reverse=True
-    )
-
-    return resultados[:quantidade]
-
-
-# ============================================================
-# CANDIDATOS PARA GERAÇÃO
-# ============================================================
-
-TERMOS_TAREFA = {
-    "montagem",
-    "instalação",
-    "instalacao",
-    "fixação",
-    "fixacao",
-    "inspeção",
-    "inspecao",
-    "preparação",
-    "preparacao",
-    "acesso",
-    "movimentação",
-    "movimentacao",
-    "transporte",
-    "corte",
-    "perfuração",
-    "perfuracao",
-    "passagem",
-    "lançamento",
-    "lancamento",
-    "posicionamento",
-    "limpeza",
-    "desmontagem",
-    "sinalização",
-    "sinalizacao",
-    "utilização",
-    "utilizacao",
-    "execução",
-    "execucao"
-}
-
-
-TERMOS_RISCO = {
-    "queda",
-    "choque",
-    "elétrico",
-    "eletrico",
-    "corte",
-    "prensamento",
-    "esmagamento",
-    "atropelamento",
-    "colisão",
-    "colisao",
-    "projeção",
-    "projecao",
-    "incêndio",
-    "incendio",
-    "explosão",
-    "explosao",
-    "ruído",
-    "ruido",
-    "vibração",
-    "vibracao",
-    "ergonômico",
-    "ergonomico",
-    "exposição",
-    "exposicao",
-    "material",
-    "ferramenta",
-    "objetos",
-    "lesão",
-    "lesao",
-    "acidente"
-}
-
-
-TERMOS_CONTROLE = {
-    "inspeção",
-    "inspecao",
-    "sinalização",
-    "sinalizacao",
-    "isolamento",
-    "bloqueio",
-    "desenergização",
-    "desenergizacao",
-    "autorização",
-    "autorizacao",
-    "amarração",
-    "amarracao",
-    "delimitação",
-    "delimitacao",
-    "proteção",
-    "protecao",
-    "guarda-corpo",
-    "guardacorpo",
-    "linha de vida",
-    "checklist",
-    "controle",
-    "verificação",
-    "verificacao",
-    "permissão",
-    "permissao",
-    "organização",
-    "organizacao"
-}
-
-
-TERMOS_PROTECAO = {
-    "capacete",
-    "óculos",
-    "oculos",
-    "luva",
-    "luvas",
-    "calçado",
-    "calcado",
-    "cinto",
-    "talabarte",
-    "protetor",
-    "respirador",
-    "máscara",
-    "mascara",
-    "epi",
-    "equipamento de proteção",
-    "equipamento de protecao"
-}
-
-
-TERMOS_APOIO = {
-    "nr-",
-    "nr ",
-    "procedimento",
-    "treinamento",
-    "capacitação",
-    "capacitacao",
-    "supervisão",
-    "supervisao",
-    "autorização",
-    "autorizacao",
-    "apr",
-    "instrução",
-    "instrucao",
-    "certificação",
-    "certificacao",
-    "permissão",
-    "permissao"
-}
-
-
-def linha_relevante(
-    linha
-):
-
-    texto = normalizar(
-        linha
-    )
-
-    if len(texto) < 12:
-        return False
-
-    return any(
-        termo in texto
-        for termo in TERMOS_TAREFA
-    )
-
-
-def extrair_candidatos(
-    textos
-):
-
-    tarefas = []
-    riscos = []
-    controles = []
-    protecoes = []
-    apoios = []
-
-    for texto in textos:
-
-        linhas = [
-            x.strip()
-            for x in str(texto).splitlines()
-            if x.strip()
-        ]
-
-        for linha in linhas:
-
-            if len(linha) > 500:
-                continue
-
-            normalizada = normalizar(
-                linha
-            )
-
-            if linha_relevante(
-                linha
-            ):
-
-                tarefas.append(
-                    linha
-                )
-
-            if any(
-                termo in normalizada
-                for termo in TERMOS_RISCO
-            ):
-
-                riscos.append(
-                    linha
-                )
-
-            if any(
-                termo in normalizada
-                for termo in TERMOS_CONTROLE
-            ):
-
-                controles.append(
-                    linha
-                )
-
-            if any(
-                termo in normalizada
-                for termo in TERMOS_PROTECAO
-            ):
-
-                protecoes.append(
-                    linha
-                )
-
-            if any(
-                termo in normalizada
-                for termo in TERMOS_APOIO
-            ):
-
-                apoios.append(
-                    linha
-                )
-
-    return {
-        "tarefas": remover_duplicados(
-            tarefas
-        ),
-        "riscos": remover_duplicados(
-            riscos
-        ),
-        "controles": remover_duplicados(
-            controles
-        ),
-        "protecoes": remover_duplicados(
-            protecoes
-        ),
-        "apoios": remover_duplicados(
-            apoios
-        )
-    }
-
-
-def remover_duplicados(
-    itens
-):
-
-    resultado = []
-    vistos = set()
-
-    for item in itens:
-
-        chave = normalizar(
-            item
-        )
-
-        if chave in vistos:
-            continue
-
-        vistos.add(
-            chave
-        )
-
-        resultado.append(
-            item
-        )
+    workbook.close()
 
     return resultado
 
 
 # ============================================================
-# SIMILARIDADE ENTRE LINHAS
+# UTILITÁRIOS DE ESTRUTURAÇÃO
 # ============================================================
 
-def selecionar_semelhantes(
-    consulta,
-    candidatos,
-    modelo,
-    limite=2
-):
+def eh_numero(valor):
 
-    if not candidatos:
-
-        return []
-
-    textos = (
-        [consulta]
-        +
-        candidatos
-    )
-
-    embeddings = modelo.encode(
-        textos,
-        normalize_embeddings=True,
-        show_progress_bar=False
-    )
-
-    query = embeddings[0]
-
-    scores = np.dot(
-        embeddings[1:],
-        query
-    )
-
-    pares = list(
-        zip(
-            candidatos,
-            scores
+    return bool(
+        re.fullmatch(
+            r"\d+(?:[.,]\d+)?",
+            str(valor).strip()
         )
     )
 
-    pares.sort(
-        key=lambda x: x[1],
-        reverse=True
-    )
 
-    resultado = []
-
-    for texto, score in pares[:limite]:
-
-        resultado.append(
-            texto
-        )
-
-    return resultado
-
-
-# ============================================================
-# NÍVEL DE RISCO
-# ============================================================
-
-def identificar_nivel(
-    texto_risco
-):
+def nivel_explicito(texto):
 
     texto = normalizar(
-        texto_risco
+        texto
     )
-
-    # Primeiro tenta encontrar classificação
-    # explicitamente registrada na fonte.
 
     padroes = [
-        r"\|\s*([AMB])\s*\|",
-        r"\b(?:nivel|nível)\s*[:\-]?\s*([AMB])\b",
-        r"\b([AMB])\s*[-–]\s*(?:alto|medio|médio|baixo)\b"
+
+        r"\bnivel\s*[:\-]?\s*([amb])\b",
+
+        r"\b([amb])\s*[-–]\s*"
+        r"(alto|medio|baixo)\b",
+
+        r"\b([amb])\s*\("
     ]
 
     for padrao in padroes:
@@ -1241,292 +263,734 @@ def identificar_nivel(
                 1
             ).upper()
 
-
-    # Heurística conservadora apenas quando
-    # a fonte não apresenta a classificação.
-
-    if any(
-        termo in texto
-        for termo in [
-            "queda de altura",
-            "choque eletrico",
-            "choque elétrico",
-            "atropelamento",
-            "esmagamento",
-            "explosao",
-            "explosão"
-        ]
-    ):
-
-        return "A"
+    return ""
 
 
-    if any(
-        termo in texto
-        for termo in [
-            "corte",
-            "projecao",
-            "projeção",
-            "queda de material",
-            "ruido",
-            "ruído"
-        ]
-    ):
+def procurar_cabecalho(linha):
 
-        return "M"
-
-
-    return "B"
-
-
-# ============================================================
-# CONSOLIDAÇÃO
-# ============================================================
-
-def consolidar_dados(
-    resultados,
-    modelo,
-    max_linhas=16
-):
-
-    textos = [
-        resultado["texto"]
-        for resultado
-        in resultados
-    ]
-
-    candidatos = extrair_candidatos(
-        textos
+    texto = normalizar(
+        " | ".join(linha)
     )
 
-    if not candidatos["tarefas"]:
+    indicadores = [
 
-        # Fallback:
-        # utiliza linhas mais longas do documento.
+        (
+            "descricao das tarefas"
+            in texto
+        ),
 
-        for texto in textos:
+        (
+            "riscos associados"
+            in texto
+        ),
 
-            for linha in str(texto).splitlines():
+        (
+            "barreira de controle"
+            in texto
+        ),
 
-                linha = linha.strip()
+        (
+            "medidas de controle"
+            in texto
+        )
 
-                if (
-                    25
-                    <= len(linha)
-                    <= 300
-                ):
+    ]
 
-                    candidatos[
-                        "tarefas"
-                    ].append(
-                        linha
+    return sum(indicadores) >= 2
+
+
+def mapear_colunas(linha):
+
+    mapa = {}
+
+    for indice, valor in enumerate(
+        linha
+    ):
+
+        texto = normalizar(
+            valor
+        )
+
+        if (
+            "descricao das tarefas"
+            in texto
+            or
+            "sequencia da tarefa"
+            in texto
+        ):
+
+            mapa["tarefa"] = indice
+
+        elif (
+            "riscos associados"
+            in texto
+            or
+            "perigos" in texto
+        ):
+
+            mapa["risco"] = indice
+
+        elif (
+            "nivel" in texto
+            and
+            (
+                "a/m/b" in texto
+                or
+                "amb" in texto
+            )
+        ):
+
+            mapa["nivel"] = indice
+
+        elif (
+            "barreira de controle"
+            in texto
+            or
+            "medidas de controle"
+            in texto
+        ):
+
+            mapa["controle"] = indice
+
+        elif (
+            "barreira de protecao"
+            in texto
+            or
+            "epi" in texto
+        ):
+
+            mapa["protecao"] = indice
+
+        elif (
+            "barreira de apoio"
+            in texto
+            or
+            "procedimento de seguranca"
+            in texto
+        ):
+
+            mapa["apoio"] = indice
+
+    return mapa
+
+
+# ============================================================
+# EXTRAÇÃO ESTRUTURADA
+# ============================================================
+
+def extrair_registros(linhas):
+
+    registros = []
+
+    mapa = None
+    ultima_tarefa = ""
+
+    for linha in linhas:
+
+        if not linha:
+            continue
+
+        # ----------------------------------------------------
+        # Detecta cabeçalho
+        # ----------------------------------------------------
+
+        if procurar_cabecalho(
+            linha
+        ):
+
+            mapa = mapear_colunas(
+                linha
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Estrutura tabular
+        # ----------------------------------------------------
+
+        if mapa:
+
+            tarefa = ""
+
+            risco = ""
+
+            nivel = ""
+
+            controle = ""
+
+            protecao = ""
+
+            apoio = ""
+
+
+            if "tarefa" in mapa:
+
+                i = mapa["tarefa"]
+
+                if i < len(linha):
+
+                    tarefa = (
+                        linha[i]
+                        or ""
                     )
 
-        candidatos["tarefas"] = (
-            remover_duplicados(
-                candidatos["tarefas"]
+
+            if "risco" in mapa:
+
+                i = mapa["risco"]
+
+                if i < len(linha):
+
+                    risco = (
+                        linha[i]
+                        or ""
+                    )
+
+
+            if "nivel" in mapa:
+
+                i = mapa["nivel"]
+
+                if i < len(linha):
+
+                    nivel = (
+                        linha[i]
+                        or ""
+                    )
+
+
+            if "controle" in mapa:
+
+                i = mapa["controle"]
+
+                if i < len(linha):
+
+                    controle = (
+                        linha[i]
+                        or ""
+                    )
+
+
+            if "protecao" in mapa:
+
+                i = mapa["protecao"]
+
+                if i < len(linha):
+
+                    protecao = (
+                        linha[i]
+                        or ""
+                    )
+
+
+            if "apoio" in mapa:
+
+                i = mapa["apoio"]
+
+                if i < len(linha):
+
+                    apoio = (
+                        linha[i]
+                        or ""
+                    )
+
+
+            if tarefa:
+
+                ultima_tarefa = (
+                    tarefa
+                )
+
+
+            if risco:
+
+                registros.append({
+
+                    "tarefa":
+                        tarefa
+                        or
+                        ultima_tarefa,
+
+                    "risco":
+                        risco,
+
+                    "nivel":
+                        nivel,
+
+                    "controle":
+                        controle,
+
+                    "protecao":
+                        protecao,
+
+                    "apoio":
+                        apoio
+
+                })
+
+            continue
+
+
+        # ----------------------------------------------------
+        # Estrutura legada:
+        #
+        # Tarefa | Risco | P | S | R | Controle
+        # ----------------------------------------------------
+
+        if len(linha) >= 4:
+
+            for indice, valor in enumerate(
+                linha
+            ):
+
+                if not eh_numero(
+                    valor
+                ):
+
+                    continue
+
+                if (
+                    indice + 2
+                    >= len(linha)
+                ):
+
+                    continue
+
+                if not eh_numero(
+                    linha[indice + 1]
+                ):
+
+                    continue
+
+                if not eh_numero(
+                    linha[indice + 2]
+                ):
+
+                    continue
+
+
+                risco = ""
+
+                if indice > 0:
+
+                    risco = (
+                        linha[
+                            indice - 1
+                        ]
+                    )
+
+
+                controle = ""
+
+                if (
+                    indice + 3
+                    < len(linha)
+                ):
+
+                    controle = (
+                        " | ".join(
+                            linha[
+                                indice + 3:
+                            ]
+                        )
+                    )
+
+
+                if risco:
+
+                    registros.append({
+
+                        "tarefa":
+                            ultima_tarefa,
+
+                        "risco":
+                            risco,
+
+                        "nivel":
+                            nivel_explicito(
+                                " | ".join(
+                                    linha
+                                )
+                            ),
+
+                        "controle":
+                            controle,
+
+                        "protecao":
+                            "",
+
+                        "apoio":
+                            ""
+
+                    })
+
+                break
+
+
+        # ----------------------------------------------------
+        # Detecta possíveis tarefas
+        # ----------------------------------------------------
+
+        texto_linha = normalizar(
+            " ".join(linha)
+        )
+
+        palavras_tarefa = [
+
+            "etapa",
+            "montagem",
+            "instalacao",
+            "fixacao",
+            "preparacao",
+            "acesso",
+            "movimentacao",
+            "transporte",
+            "limpeza",
+            "sinalizacao",
+            "perfuracao",
+            "corte"
+
+        ]
+
+        if any(
+            palavra in texto_linha
+            for palavra
+            in palavras_tarefa
+        ):
+
+            ultima_tarefa = (
+                " ".join(linha)
             )
+
+
+    return registros
+
+
+# ============================================================
+# CHUNKS PARA BUSCA
+# ============================================================
+
+def criar_chunks(
+    texto,
+    tamanho=1800,
+    sobreposicao=250
+):
+
+    if len(texto) <= tamanho:
+
+        return [
+            texto
+        ]
+
+    resultado = []
+
+    inicio = 0
+
+    while inicio < len(texto):
+
+        fim = (
+            inicio
+            +
+            tamanho
         )
 
-
-    tarefas = candidatos[
-        "tarefas"
-    ][:max_linhas]
-
-
-    linhas = []
-
-
-    for tarefa in tarefas:
-
-        riscos = selecionar_semelhantes(
-            tarefa,
-            candidatos["riscos"],
-            modelo,
-            limite=2
+        resultado.append(
+            texto[
+                inicio:fim
+            ]
         )
 
-        controles = selecionar_semelhantes(
-            tarefa,
-            candidatos["controles"],
-            modelo,
-            limite=2
+        inicio = (
+            fim
+            -
+            sobreposicao
         )
 
-        protecoes = selecionar_semelhantes(
-            tarefa,
-            candidatos["protecoes"],
-            modelo,
-            limite=2
+    return resultado
+
+
+# ============================================================
+# ÍNDICE SEMÂNTICO
+# ============================================================
+
+def preparar_indice(
+    base
+):
+
+    textos = []
+    metadados = []
+
+    for item in base:
+
+        chunks = criar_chunks(
+            item["texto"]
         )
 
-        apoios = selecionar_semelhantes(
-            tarefa,
-            candidatos["apoios"],
-            modelo,
-            limite=2
-        )
+        for chunk in chunks:
 
-
-        risco_texto = (
-            "\n".join(
-                [
-                    f"{i + 1}. {x}"
-                    for i, x
-                    in enumerate(riscos)
-                ]
+            textos.append(
+                chunk
             )
-        )
 
-
-        controle_texto = (
-            "\n".join(
-                [
-                    f"{i + 1}. {x}"
-                    for i, x
-                    in enumerate(controles)
-                ]
+            metadados.append(
+                item
             )
+
+
+    modelo = carregar_modelo()
+
+    embeddings = modelo.encode(
+        textos,
+        batch_size=16,
+        normalize_embeddings=True,
+        show_progress_bar=False
+    )
+
+    return (
+        np.asarray(
+            embeddings,
+            dtype=np.float32
+        ),
+        metadados
+    )
+
+
+# ============================================================
+# BUSCA SEMÂNTICA
+# ============================================================
+
+def buscar(
+    consulta,
+    embeddings,
+    metadados,
+    quantidade
+):
+
+    modelo = carregar_modelo()
+
+    query = modelo.encode(
+        [consulta],
+        normalize_embeddings=True,
+        show_progress_bar=False
+    )[0]
+
+    similaridades = np.dot(
+        embeddings,
+        query
+    )
+
+    melhores = {}
+
+    for indice, similaridade in enumerate(
+        similaridades
+    ):
+
+        arquivo = (
+            metadados[
+                indice
+            ]["arquivo"]
         )
 
+        if (
+            arquivo not in melhores
+            or
+            similaridade
+            >
+            melhores[
+                arquivo
+            ]
+        ):
 
-        protecao_texto = (
-            "\n".join(
-                [
-                    f"{i + 1}. {x}"
-                    for i, x
-                    in enumerate(protecoes)
-                ]
+            melhores[
+                arquivo
+            ] = float(
+                similaridade
             )
-        )
 
 
-        apoio_texto = (
-            "\n".join(
-                [
-                    f"{i + 1}. {x}"
-                    for i, x
-                    in enumerate(apoios)
-                ]
+    resultados = []
+
+    for arquivo, similaridade in (
+        melhores.items()
+    ):
+
+        percentual = (
+            (
+                similaridade
+                + 1
             )
-        )
+            /
+            2
+        ) * 100
 
+        resultados.append({
 
-        nivel = identificar_nivel(
-            risco_texto
-        )
+            "arquivo":
+                arquivo,
 
-
-        linhas.append({
-
-            "tarefa":
-                tarefa,
-
-            "risco":
-                risco_texto
-                or
-                "Validar riscos da tarefa",
-
-            "nivel":
-                nivel,
-
-            "controle":
-                controle_texto
-                or
-                "Validar barreiras de controle",
-
-            "protecao":
-                protecao_texto
-                or
-                "Validar barreiras de proteção",
-
-            "apoio":
-                apoio_texto
-                or
-                "Validar procedimentos, treinamento e supervisão"
+            "similaridade":
+                percentual
 
         })
 
 
-    return linhas
-
-
-# ============================================================
-# MARCAÇÃO DE ATIVIDADE DE ALTO RISCO
-# ============================================================
-
-def detectar_alto_risco(
-    atividade
-):
-
-    texto = normalizar(
-        atividade
+    resultados.sort(
+        key=lambda x:
+            x["similaridade"],
+        reverse=True
     )
 
-    riscos = {
+    return resultados[
+        :quantidade
+    ]
 
-        "altura":
-            "altura" in texto,
 
-        "confinado":
-            "confinado" in texto,
+# ============================================================
+# CONSOLIDAÇÃO ESTRUTURADA
+# ============================================================
 
-        "materiais":
-            "material" in texto
-            or
-            "eletrocalha" in texto,
+def consolidar(
+    atividade,
+    referencias,
+    base
+):
 
-        "perigosa":
-            "substancia perigosa" in texto,
-
-        "quente":
-            "quente" in texto
-            or
-            "soldagem" in texto,
-
-        "rua":
-            "rua" in texto,
-
-        "carga":
-            "içamento" in texto
-            or
-            "icamento" in texto,
-
-        "eletrico":
-            "eletrico" in texto
-            or
-            "elétrica" in texto
-            or
-            "eletricas" in texto,
-
-        "maquinas":
-            "maquinas pesadas" in texto,
-
-        "escavacao":
-            "escavacao" in texto,
-
-        "loto":
-            "loto" in texto
-
+    arquivos = {
+        x["arquivo"]
+        for x in referencias
     }
 
-    return riscos
+    registros = []
+
+    for item in base:
+
+        if (
+            item["arquivo"]
+            in arquivos
+        ):
+
+            registros.extend(
+                item["registros"]
+            )
+
+
+    # Remove registros vazios
+    registros = [
+
+        x for x in registros
+
+        if (
+            x["risco"]
+            and
+            x["risco"].strip()
+        )
+
+    ]
+
+
+    # --------------------------------------------------------
+    # Similaridade semântica Tarefa + Risco
+    # --------------------------------------------------------
+
+    if registros:
+
+        modelo = carregar_modelo()
+
+        textos = [
+
+            (
+                x["tarefa"]
+                +
+                " "
+                +
+                x["risco"]
+            )
+
+            for x in registros
+
+        ]
+
+        embeddings = modelo.encode(
+
+            [atividade]
+            +
+            textos,
+
+            normalize_embeddings=True,
+            show_progress_bar=False
+
+        )
+
+        scores = np.dot(
+            embeddings[1:],
+            embeddings[0]
+        )
+
+        ordem = np.argsort(
+            scores
+        )[::-1]
+
+        registros = [
+            registros[i]
+            for i in ordem
+        ]
+
+
+    # --------------------------------------------------------
+    # Remover duplicidades
+    # --------------------------------------------------------
+
+    resultado = []
+
+    vistos = set()
+
+    for registro in registros:
+
+        chave = (
+
+            normalizar(
+                registro["tarefa"]
+            ),
+
+            normalizar(
+                registro["risco"]
+            )
+
+        )
+
+        if chave in vistos:
+
+            continue
+
+        vistos.add(
+            chave
+        )
+
+        resultado.append(
+            registro
+        )
+
+        if len(resultado) >= 12:
+
+            break
+
+
+    return resultado
 
 
 # ============================================================
-# PREENCHER MODELO EXCEL
+# PREENCHER MODELO
 # ============================================================
 
-def preencher_modelo_excel(
-    template_bytes,
+def preencher_modelo(
+    modelo_bytes,
     dados,
-    linhas_apr,
-    nome_saida
+    registros
 ):
 
     workbook = load_workbook(
         io.BytesIO(
-            template_bytes
+            modelo_bytes
         )
     )
 
@@ -1536,11 +1000,13 @@ def preencher_modelo_excel(
     )
 
 
-    if nome_aba not in workbook.sheetnames:
+    if nome_aba not in (
+        workbook.sheetnames
+    ):
 
         raise ValueError(
-            "A aba principal do modelo "
-            "não foi encontrada."
+            "Aba principal do modelo "
+            "não encontrada."
         )
 
 
@@ -1553,242 +1019,130 @@ def preencher_modelo_excel(
     # CABEÇALHO
     # --------------------------------------------------------
 
-    ws["A4"] = dados.get(
-        "responsavel_atividade",
-        ""
+    ws["A4"] = (
+        dados["responsavel_atividade"]
     )
 
-    ws["C4"] = dados.get(
-        "cargo",
-        ""
+    ws["C4"] = (
+        dados["cargo"]
     )
 
-    ws["H4"] = dados.get(
-        "contratante",
-        ""
+    ws["H4"] = (
+        dados["contratante"]
     )
 
-    ws["J4"] = dados.get(
-        "ticket",
-        ""
+    ws["J4"] = (
+        dados["ticket"]
     )
 
-    ws["A6"] = dados.get(
-        "empresa",
-        ""
+    ws["A6"] = (
+        dados["empresa"]
     )
 
-    ws["C6"] = dados.get(
-        "responsavel",
-        ""
+    ws["C6"] = (
+        dados["responsavel"]
     )
 
     ws["H6"] = (
-        f"Inicio: "
-        f"{dados.get('inicio', '')}"
-        f"                         "
-        f"Fim: "
-        f"{dados.get('fim', '')}"
+        f"Início: {dados['inicio']} "
+        f"                     "
+        f"Fim: {dados['fim']}"
     )
 
-    ws["C7"] = dados.get(
-        "atividade",
-        ""
+    ws["C7"] = (
+        dados["atividade"]
     )
 
-    ws["C8"] = dados.get(
-        "data_center",
-        ""
+    ws["C8"] = (
+        dados["data_center"]
     )
 
-    ws["I8"] = dados.get(
-        "localizacao",
-        ""
+    ws["I8"] = (
+        dados["localizacao"]
     )
 
 
     # --------------------------------------------------------
-    # ATIVIDADES DE ALTO RISCO
-    # --------------------------------------------------------
-
-    alto_risco = detectar_alto_risco(
-        dados.get(
-            "atividade",
-            ""
-        )
-    )
-
-
-    def marcar(texto, chave):
-
-        if alto_risco.get(
-            chave,
-            False
-        ):
-
-            return re.sub(
-                r"\(\s*\)",
-                "( X )",
-                texto,
-                count=1
-            )
-
-        return texto
-
-
-    ws["A10"] = marcar(
-        ws["A10"].value,
-        "altura"
-    )
-
-    ws["E10"] = marcar(
-        ws["E10"].value,
-        "confinado"
-    )
-
-    ws["I10"] = marcar(
-        ws["I10"].value,
-        "materiais"
-    )
-
-    ws["A11"] = marcar(
-        ws["A11"].value,
-        "perigosa"
-    )
-
-    ws["E11"] = marcar(
-        ws["E11"].value,
-        "quente"
-    )
-
-    ws["I11"] = marcar(
-        ws["I11"].value,
-        "rua"
-    )
-
-    ws["A12"] = marcar(
-        ws["A12"].value,
-        "carga"
-    )
-
-    ws["E12"] = marcar(
-        ws["E12"].value,
-        "eletrico"
-    )
-
-    ws["I12"] = marcar(
-        ws["I12"].value,
-        "maquinas"
-    )
-
-    ws["A13"] = marcar(
-        ws["A13"].value,
-        "loto"
-    )
-
-    ws["E13"] = marcar(
-        ws["E13"].value,
-        "escavacao"
-    )
-
-
-    # --------------------------------------------------------
-    # LIMPAR ÁREA DA APR
+    # LIMPA APENAS A ÁREA DE RESULTADO
     # --------------------------------------------------------
 
     for linha in range(
         33,
-        49
+        70
     ):
 
-        ws.cell(
-            linha,
-            1
-        ).value = None
+        for coluna in [
+            1, 3, 7, 8, 9, 10
+        ]:
 
-        ws.cell(
-            linha,
-            3
-        ).value = None
-
-        ws.cell(
-            linha,
-            7
-        ).value = None
-
-        ws.cell(
-            linha,
-            8
-        ).value = None
-
-        ws.cell(
-            linha,
-            9
-        ).value = None
-
-        ws.cell(
-            linha,
-            10
-        ).value = None
+            ws.cell(
+                linha,
+                coluna
+            ).value = None
 
 
     # --------------------------------------------------------
-    # PREENCHER LINHAS
+    # PREENCHIMENTO
     # --------------------------------------------------------
 
-    for indice, item in enumerate(
-        linhas_apr[:16],
+    for indice, registro in enumerate(
+        registros,
         start=33
     ):
 
         ws.cell(
             indice,
             1
-        ).value = item[
-            "tarefa"
-        ]
+        ).value = (
+            registro["tarefa"]
+        )
 
         ws.cell(
             indice,
             3
-        ).value = item[
-            "risco"
-        ]
+        ).value = (
+            registro["risco"]
+        )
 
         ws.cell(
             indice,
             7
-        ).value = item[
-            "nivel"
-        ]
+        ).value = (
+            registro["nivel"]
+            or
+            "VALIDAR"
+        )
 
         ws.cell(
             indice,
             8
-        ).value = item[
-            "controle"
-        ]
+        ).value = (
+            registro["controle"]
+            or
+            "VALIDAR"
+        )
 
         ws.cell(
             indice,
             9
-        ).value = item[
-            "protecao"
-        ]
+        ).value = (
+            registro["protecao"]
+            or
+            "VALIDAR"
+        )
 
         ws.cell(
             indice,
             10
-        ).value = item[
-            "apoio"
-        ]
+        ).value = (
+            registro["apoio"]
+            or
+            "VALIDAR"
+        )
 
-
-        # Preserva estilos já existentes
-        # e ajusta alinhamento.
 
         for coluna in [
-            1, 3, 8, 9, 10
+            1, 3, 7, 8, 9, 10
         ]:
 
             ws.cell(
@@ -1803,7 +1157,7 @@ def preencher_modelo_excel(
 
 
     # --------------------------------------------------------
-    # NOME DO ARQUIVO
+    # SALVAR
     # --------------------------------------------------------
 
     saida = io.BytesIO()
@@ -1823,30 +1177,66 @@ def preencher_modelo_excel(
 # SESSION STATE
 # ============================================================
 
-if "base_aprs" not in st.session_state:
-    st.session_state.base_aprs = []
+if "base" not in st.session_state:
 
-if "indice_embeddings" not in st.session_state:
-    st.session_state.indice_embeddings = None
+    st.session_state.base = []
 
-if "metadados_embeddings" not in st.session_state:
-    st.session_state.metadados_embeddings = []
 
-if "indice_pronto" not in st.session_state:
-    st.session_state.indice_pronto = False
+if "embeddings" not in st.session_state:
 
-if "arquivo_processado" not in st.session_state:
-    st.session_state.arquivo_processado = None
+    st.session_state.embeddings = None
 
-if "resultados_busca" not in st.session_state:
-    st.session_state.resultados_busca = []
 
-if "linhas_apr" not in st.session_state:
-    st.session_state.linhas_apr = []
+if "metadados" not in st.session_state:
+
+    st.session_state.metadados = []
+
+
+if "resultados" not in st.session_state:
+
+    st.session_state.resultados = []
+
+
+if "arquivo_final" not in st.session_state:
+
+    st.session_state.arquivo_final = None
 
 
 # ============================================================
-# 1. BASE FONTE
+# TOPO
+# ============================================================
+
+col1, col2, col3 = st.columns(
+    3
+)
+
+with col1:
+
+    st.metric(
+        "APRs",
+        "10 APRs"
+    )
+
+with col2:
+
+    st.metric(
+        "Meta",
+        "50 minutos"
+    )
+
+with col3:
+
+    st.metric(
+        "Meta por APR",
+        "≤ 5 minutos"
+    )
+
+
+st.divider()
+
+
+# ============================================================
+# 1 — FONTE
 # ============================================================
 
 st.header(
@@ -1854,33 +1244,13 @@ st.header(
 )
 
 
-uploaded_file = st.file_uploader(
+fonte = st.file_uploader(
     "Selecione o FONTE.zip",
     type=["zip"]
 )
 
 
-if uploaded_file is not None:
-
-    nome_zip = uploaded_file.name
-
-    if (
-        st.session_state.arquivo_processado
-        != nome_zip
-    ):
-
-        st.session_state.base_aprs = []
-
-        st.session_state.indice_embeddings = None
-
-        st.session_state.metadados_embeddings = []
-
-        st.session_state.indice_pronto = False
-
-        st.session_state.resultados_busca = []
-
-        st.session_state.linhas_apr = []
-
+if fonte:
 
     if st.button(
         "📥 INDEXAR BASE FONTE",
@@ -1889,117 +1259,98 @@ if uploaded_file is not None:
 
         inicio = time.time()
 
-        with st.spinner(
-            "Lendo todos os arquivos Excel..."
-        ):
+        base = []
 
-            base_aprs = []
+        with zipfile.ZipFile(
+            fonte
+        ) as arquivo_zip:
 
-            with zipfile.ZipFile(
-                uploaded_file,
-                "r"
-            ) as zip_ref:
+            arquivos = [
 
-                arquivos_excel = [
+                nome
 
-                    nome
+                for nome
+                in arquivo_zip.namelist()
 
-                    for nome
-                    in zip_ref.namelist()
-
-                    if (
-                        nome.lower().endswith(
-                            ".xlsx"
-                        )
-                        or
-                        nome.lower().endswith(
-                            ".xlsm"
-                        )
+                if nome.lower().endswith(
+                    (
+                        ".xlsx",
+                        ".xlsm"
                     )
-                    and
-                    not nome.startswith(
-                        "__MACOSX"
-                    )
-                ]
-
-                total = len(
-                    arquivos_excel
                 )
 
-                progresso = st.progress(
-                    0
+                and
+                not nome.startswith(
+                    "__MACOSX"
                 )
 
-                for contador, nome in enumerate(
-                    arquivos_excel,
-                    start=1
-                ):
+            ]
 
-                    try:
 
-                        dados_excel = ler_excel(
-                            zip_ref.read(nome),
+            progresso = st.progress(
+                0
+            )
+
+
+            for indice, nome in enumerate(
+                arquivos,
+                start=1
+            ):
+
+                try:
+
+                    base.extend(
+                        ler_excel(
+                            arquivo_zip.read(
+                                nome
+                            ),
                             nome
                         )
-
-                        base_aprs.extend(
-                            dados_excel
-                        )
-
-                    except Exception as e:
-
-                        st.warning(
-                            f"Erro em "
-                            f"{nome}: {e}"
-                        )
-
-                    progresso.progress(
-                        contador / total
                     )
 
+                except Exception as erro:
 
-        st.session_state.base_aprs = (
-            base_aprs
+                    st.warning(
+                        f"Erro em {nome}: "
+                        f"{erro}"
+                    )
+
+                progresso.progress(
+                    indice
+                    /
+                    len(arquivos)
+                )
+
+
+        st.session_state.base = (
+            base
         )
 
-        st.session_state.arquivo_processado = (
-            nome_zip
-        )
+        st.session_state.embeddings = None
 
-        st.session_state.indice_embeddings = None
+        st.session_state.resultados = []
 
-        st.session_state.metadados_embeddings = []
-
-        st.session_state.indice_pronto = False
-
-        st.session_state.resultados_busca = []
-
-        tempo = (
-            time.time()
-            -
-            inicio
-        )
-
-        quantidade = len(
+        quantidade_arquivos = len(
             set(
                 x["arquivo"]
-                for x in base_aprs
+                for x in base
             )
         )
 
         st.success(
             f"Base indexada: "
-            f"{quantidade} arquivos e "
-            f"{len(base_aprs)} planilhas "
-            f"em {tempo:.1f} segundos."
+            f"{quantidade_arquivos} arquivos "
+            f"e {len(base)} planilhas "
+            f"em "
+            f"{time.time() - inicio:.1f} segundos."
         )
 
 
 # ============================================================
-# 2. MODELO SEMÂNTICO
+# 2 — SEMÂNTICA
 # ============================================================
 
-if st.session_state.base_aprs:
+if st.session_state.base:
 
     st.divider()
 
@@ -2007,29 +1358,33 @@ if st.session_state.base_aprs:
         "🧠 2. Preparar busca semântica"
     )
 
-    total_aprs = len(
-        set(
-            x["arquivo"]
-            for x in st.session_state.base_aprs
-        )
+
+    col1, col2 = st.columns(
+        2
     )
 
-    total_planilhas = len(
-        st.session_state.base_aprs
-    )
-
-    col1, col2 = st.columns(2)
 
     with col1:
+
         st.metric(
             "Arquivos Excel",
-            total_aprs
+            len(
+                set(
+                    x["arquivo"]
+                    for x
+                    in st.session_state.base
+                )
+            )
         )
 
+
     with col2:
+
         st.metric(
             "Planilhas indexadas",
-            total_planilhas
+            len(
+                st.session_state.base
+            )
         )
 
 
@@ -2040,77 +1395,58 @@ if st.session_state.base_aprs:
 
         inicio = time.time()
 
-        try:
+        with st.spinner(
+            "Criando índice semântico..."
+        ):
 
-            with st.spinner(
-                "Carregando modelo..."
-            ):
-
-                modelo = carregar_modelo()
-
-
-            with st.spinner(
-                "Criando índice semântico..."
-            ):
-
-                (
-                    embeddings,
-                    metadados
-                ) = preparar_indice_semantico(
-                    st.session_state.base_aprs,
-                    modelo
-                )
-
-
-            st.session_state.indice_embeddings = (
-                embeddings
-            )
-
-            st.session_state.metadados_embeddings = (
+            (
+                embeddings,
                 metadados
+            ) = preparar_indice(
+                st.session_state.base
             )
 
-            st.session_state.indice_pronto = True
 
-            tempo = (
-                time.time()
-                -
-                inicio
-            )
+        st.session_state.embeddings = (
+            embeddings
+        )
 
-            st.success(
-                f"Busca semântica preparada "
-                f"em {tempo:.1f} segundos."
-            )
+        st.session_state.metadados = (
+            metadados
+        )
 
-        except Exception as e:
 
-            st.error(
-                "Erro ao preparar o modelo."
-            )
-
-            st.exception(e)
+        st.success(
+            f"Busca semântica preparada "
+            f"em "
+            f"{time.time() - inicio:.1f} segundos."
+        )
 
 
 # ============================================================
-# 3. CONSULTA
+# 3 — BUSCA
 # ============================================================
 
-if st.session_state.indice_pronto:
+if (
+    st.session_state.embeddings
+    is not None
+):
 
     st.divider()
 
     st.header(
-        "🔎 3. Descrever a atividade"
+        "🔎 3. Buscar APRs de referência"
     )
 
-    consulta = st.text_input(
-        "Atividade que deseja gerar:",
-        placeholder=(
-            "Ex.: Montagem e fixação "
+
+    atividade_busca = st.text_input(
+        "Descreva a atividade:",
+        value=(
+            "Montagem e fixação "
             "de eletrocalhas em altura"
         )
     )
+
 
     quantidade = st.slider(
         "Quantidade de APRs de referência",
@@ -2121,112 +1457,80 @@ if st.session_state.indice_pronto:
 
 
     if st.button(
-        "🔍 BUSCAR APRs DE REFERÊNCIA",
+        "🔍 BUSCAR APRs",
         type="primary"
     ):
 
-        if not consulta.strip():
+        inicio = time.time()
 
-            st.warning(
-                "Informe a atividade."
-            )
-
-        else:
-
-            inicio = time.time()
-
-            modelo = carregar_modelo()
-
-            resultados = buscar_aprs(
-                consulta,
-                modelo,
-                st.session_state.indice_embeddings,
-                st.session_state.metadados_embeddings,
-                st.session_state.base_aprs,
+        st.session_state.resultados = (
+            buscar(
+                atividade_busca,
+                st.session_state.embeddings,
+                st.session_state.metadados,
                 quantidade
             )
+        )
 
-            st.session_state.resultados_busca = (
-                resultados
-            )
 
-            tempo = (
-                time.time()
-                -
-                inicio
-            )
-
-            st.success(
-                f"{len(resultados)} APRs encontradas "
-                f"em {tempo:.2f} segundos."
-            )
+        st.success(
+            f"Busca concluída em "
+            f"{time.time() - inicio:.2f} segundos."
+        )
 
 
 # ============================================================
-# 4. SELEÇÃO DAS APRs
+# 4 — RESULTADOS
 # ============================================================
 
-if st.session_state.resultados_busca:
+if st.session_state.resultados:
 
     st.divider()
 
     st.header(
-        "🎯 4. Selecionar APRs de referência"
+        "🎯 4. APRs de referência"
     )
+
 
     opcoes = [
 
-        f"{i + 1}. "
-        f"{r['arquivo']} "
-        f"— {r['score_hibrido']:.1f}%"
+        (
+            f"{indice + 1}. "
+            f"{resultado['arquivo']} "
+            f"— "
+            f"{resultado['similaridade']:.1f}%"
+        )
 
-        for i, r
+        for indice, resultado
         in enumerate(
-            st.session_state.resultados_busca
+            st.session_state.resultados
         )
 
     ]
 
 
     selecionadas = st.multiselect(
-        "Selecione as APRs que servirão como referência técnica:",
-        options=opcoes,
-        default=opcoes[:min(3, len(opcoes))]
+        "Selecione as APRs de referência:",
+        opcoes,
+        default=opcoes[
+            :min(
+                3,
+                len(opcoes)
+            )
+        ]
     )
 
 
-    if selecionadas:
+    for opcao in selecionadas:
 
-        st.info(
-            f"{len(selecionadas)} APR(s) "
-            "selecionada(s) para consolidação."
+        st.write(
+            "• " + opcao
         )
 
 
-        for opcao in selecionadas:
-
-            indice = opcoes.index(
-                opcao
-            )
-
-            resultado = (
-                st.session_state.resultados_busca[
-                    indice
-                ]
-            )
-
-            st.write(
-                f"• **{resultado['arquivo']}** "
-                f"— índice "
-                f"{resultado['score_hibrido']:.1f}%"
-            )
-
-
-# ============================================================
-# 5. DADOS DA NOVA APR
-# ============================================================
-
-if st.session_state.resultados_busca:
+    # ========================================================
+    # 5 — DADOS
+    # ========================================================
 
     st.divider()
 
@@ -2234,194 +1538,136 @@ if st.session_state.resultados_busca:
         "📝 5. Dados da nova APR"
     )
 
-    col1, col2 = st.columns(2)
+
+    col1, col2 = st.columns(
+        2
+    )
+
 
     with col1:
 
         responsavel_atividade = st.text_input(
-            "Responsável pela atividade",
-            ""
+            "Responsável pela atividade"
         )
 
         cargo = st.text_input(
-            "Cargo",
-            ""
+            "Cargo"
         )
 
         contratante = st.text_input(
-            "Contratante",
-            ""
+            "Contratante"
         )
 
         ticket = st.text_input(
-            "Nº Ticket",
-            ""
+            "Nº Ticket"
         )
 
         empresa = st.text_input(
-            "Nome da empresa contratante",
-            ""
+            "Nome da empresa"
         )
 
 
     with col2:
 
         responsavel = st.text_input(
-            "Responsável",
-            ""
+            "Responsável"
         )
 
         inicio_execucao = st.text_input(
-            "Início",
-            ""
+            "Início"
         )
 
         fim_execucao = st.text_input(
-            "Fim",
-            ""
+            "Fim"
         )
 
         data_center = st.text_input(
-            "Data Center",
-            ""
+            "Data Center"
         )
 
         localizacao = st.text_input(
-            "Localização",
-            ""
+            "Localização"
         )
 
 
     atividade = st.text_area(
         "Descrição do serviço ou atividade",
-        value="",
-        height=80
+        value=atividade_busca
     )
 
 
-# ============================================================
-# 6. MODELO EXCEL
-# ============================================================
-
-if st.session_state.resultados_busca:
+    # ========================================================
+    # 6 — MODELO
+    # ========================================================
 
     st.divider()
 
     st.header(
-        "📄 6. Modelo Excel de saída"
+        "📄 6. Modelo Excel"
     )
 
-    template_file = st.file_uploader(
+
+    modelo_excel = st.file_uploader(
         "Envie o modelo oficial da APR",
         type=["xlsx"],
-        key="template_apr"
+        key="modelo_excel"
     )
 
 
-    if template_file:
+    # ========================================================
+    # 7 — GERAÇÃO
+    # ========================================================
 
-        st.success(
-            f"Modelo carregado: "
-            f"{template_file.name}"
-        )
-
-        st.caption(
-            "O sistema utilizará esse arquivo como "
-            "template e preservará as demais abas "
-            "do modelo."
-        )
-
-
-# ============================================================
-# 7. GERAR APR
-# ============================================================
-
-if (
-    st.session_state.resultados_busca
-    and
-    template_file is not None
-    and
-    selecionadas
-):
-
-    st.divider()
-
-    st.header(
-        "🚀 7. Gerar APR"
-    )
-
-    st.warning(
-        "A APR gerada nesta V7.0 é uma versão "
-        "preliminar assistida, baseada nas APRs "
-        "selecionadas. Deve ser revisada e aprovada "
-        "por profissional responsável antes da execução."
-    )
-
-
-    if st.button(
-        "🚀 GERAR APR NO MODELO PADRÃO",
-        type="primary"
+    if (
+        modelo_excel
+        and
+        selecionadas
     ):
 
-        if not atividade.strip():
+        st.divider()
 
-            st.error(
-                "Informe a descrição "
-                "da atividade."
+        st.header(
+            "🚀 7. Gerar APR"
+        )
+
+
+        st.warning(
+            "A V7.1 utiliza somente relações "
+            "encontradas nas APRs de referência. "
+            "Quando a fonte não apresentar "
+            "claramente A/M/B ou uma barreira, "
+            "o campo será marcado como VALIDAR."
+        )
+
+
+        if st.button(
+            "🚀 GERAR APR NO MODELO PADRÃO",
+            type="primary"
+        ):
+
+            inicio = time.time()
+
+
+            arquivos_referencia = [
+
+                st.session_state.resultados[
+                    opcoes.index(
+                        selecionada
+                    )
+                ]
+
+                for selecionada
+                in selecionadas
+
+            ]
+
+
+            registros = consolidar(
+                atividade,
+                arquivos_referencia,
+                st.session_state.base
             )
 
-        else:
-
-            inicio_geracao = time.time()
-
-
-            modelo = carregar_modelo()
-
-
-            # ------------------------------------------------
-            # RECUPERAR APRs SELECIONADAS
-            # ------------------------------------------------
-
-            resultados_selecionados = []
-
-
-            for opcao in selecionadas:
-
-                indice = opcoes.index(
-                    opcao
-                )
-
-                resultados_selecionados.append(
-                    st.session_state.resultados_busca[
-                        indice
-                    ]
-                )
-
-
-            # ------------------------------------------------
-            # CONSOLIDAÇÃO
-            # ------------------------------------------------
-
-            with st.spinner(
-                "Consolidando tarefas, riscos "
-                "e barreiras das APRs..."
-            ):
-
-                linhas_apr = consolidar_dados(
-                    resultados_selecionados,
-                    modelo,
-                    max_linhas=16
-                )
-
-
-            st.session_state.linhas_apr = (
-                linhas_apr
-            )
-
-
-            # ------------------------------------------------
-            # DADOS
-            # ------------------------------------------------
 
             dados = {
 
@@ -2461,57 +1707,10 @@ if (
             }
 
 
-            # ------------------------------------------------
-            # NOME
-            # ------------------------------------------------
-
-            nome_limpo = normalizar(
-                atividade
-            )
-
-            nome_limpo = (
-                re.sub(
-                    r"\s+",
-                    "_",
-                    nome_limpo
-                )[:70]
-            )
-
-
-            nome_saida = (
-                f"APR_IA_"
-                f"{nome_limpo}.xlsx"
-            )
-
-
-            # ------------------------------------------------
-            # GERAR EXCEL
-            # ------------------------------------------------
-
-            with st.spinner(
-                "Preenchendo o modelo Excel..."
-            ):
-
-                arquivo_final = (
-                    preencher_modelo_excel(
-                        template_file.getvalue(),
-                        dados,
-                        linhas_apr,
-                        nome_saida
-                    )
-                )
-
-
-            tempo_total = (
-                time.time()
-                -
-                inicio_geracao
-            )
-
-
-            st.success(
-                f"APR gerada em "
-                f"{tempo_total:.2f} segundos."
+            arquivo_final = preencher_modelo(
+                modelo_excel.getvalue(),
+                dados,
+                registros
             )
 
 
@@ -2519,18 +1718,101 @@ if (
                 arquivo_final
             )
 
+
+            st.session_state.registros = (
+                registros
+            )
+
+
+            nome_saida = (
+                "APR_IA_"
+                +
+                re.sub(
+                    r"_+",
+                    "_",
+                    normalizar(
+                        atividade
+                    ).replace(
+                        " ",
+                        "_"
+                    )
+                )[:70]
+                +
+                ".xlsx"
+            )
+
+
             st.session_state.nome_saida = (
                 nome_saida
             )
 
 
+            st.success(
+                f"APR estruturada com "
+                f"{len(registros)} registros "
+                f"em "
+                f"{time.time() - inicio:.2f} segundos."
+            )
+
+
+            # =================================================
+            # PRÉ-VISUALIZAÇÃO
+            # =================================================
+
+            st.subheader(
+                "🔎 Pré-visualização antes do Excel"
+            )
+
+
+            preview = []
+
+            for registro in registros:
+
+                preview.append({
+
+                    "Descrição das tarefas":
+                        registro["tarefa"],
+
+                    "Riscos associados":
+                        registro["risco"],
+
+                    "Nível":
+                        registro["nivel"]
+                        or
+                        "VALIDAR",
+
+                    "Barreira de controle":
+                        registro["controle"]
+                        or
+                        "VALIDAR",
+
+                    "Barreira de proteção":
+                        registro["protecao"]
+                        or
+                        "VALIDAR",
+
+                    "Barreira de apoio":
+                        registro["apoio"]
+                        or
+                        "VALIDAR"
+
+                })
+
+
+            st.dataframe(
+                preview,
+                use_container_width=True,
+                hide_index=True
+            )
+
+
 # ============================================================
-# 8. RESULTADO
+# 8 — DOWNLOAD
 # ============================================================
 
 if (
-    "arquivo_final"
-    in st.session_state
+    st.session_state.arquivo_final
+    is not None
 ):
 
     st.divider()
@@ -2540,76 +1822,34 @@ if (
     )
 
 
-    st.success(
-        "A APR foi criada utilizando "
-        "o modelo Excel fornecido."
-    )
-
-
-    if st.session_state.linhas_apr:
-
-        st.subheader(
-            "Pré-visualização da matriz gerada"
-        )
-
-
-        dados_preview = []
-
-        for item in (
-            st.session_state.linhas_apr
-        ):
-
-            dados_preview.append({
-
-                "Descrição das tarefas":
-                    item["tarefa"],
-
-                "Riscos":
-                    item["risco"],
-
-                "Nível":
-                    item["nivel"],
-
-                "Barreira de controle":
-                    item["controle"],
-
-                "Barreira de proteção":
-                    item["protecao"],
-
-                "Barreira de apoio":
-                    item["apoio"]
-
-            })
-
-
-        st.dataframe(
-            dados_preview,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
     st.download_button(
-        label="📥 BAIXAR APR GERADA",
-        data=st.session_state.arquivo_final,
-        file_name=st.session_state.nome_saida,
+
+        "📥 BAIXAR APR GERADA",
+
+        data=(
+            st.session_state.arquivo_final
+        ),
+
+        file_name=(
+            st.session_state.nome_saida
+        ),
+
         mime=(
             "application/vnd.openxmlformats-officedocument."
             "spreadsheetml.sheet"
         ),
+
         type="primary"
+
     )
 
-
-# ============================================================
-# RODAPÉ
-# ============================================================
 
 st.divider()
 
 st.caption(
-    "POC Gerador de APR com IA — V7.0 | "
-    "Busca + Consolidação + Geração no Modelo Padrão"
+    "POC Gerador de APR com IA — V7.1 | "
+    "Extração estruturada + busca semântica + "
+    "modelo oficial"
 )
 
 st.caption(
