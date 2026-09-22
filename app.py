@@ -759,27 +759,338 @@ def preparar_indice(
 # BUSCA SEMÂNTICA
 # ============================================================
 
+# ============================================================
+# V7.2 — RANKING TÉCNICO HÍBRIDO
+# ============================================================
+
+TERMOS_GENERICOS = {
+    "atividade",
+    "atividades",
+    "montagem",
+    "montagens",
+    "instalacao",
+    "instalacoes",
+    "servico",
+    "servicos",
+    "execucao",
+    "executar",
+    "trabalho",
+    "trabalhos",
+    "processo",
+    "processos",
+    "operacao",
+    "operacoes",
+    "manutencao",
+    "manutencoes",
+    "realizacao",
+    "estrutura",
+    "estruturas",
+    "equipamento",
+    "equipamentos",
+    "sistema",
+    "sistemas",
+    "procedimento",
+    "procedimentos",
+    "local",
+    "area",
+    "areas",
+    "obra",
+    "obras"
+}
+
+
+def token_tecnico(token):
+
+    token = normalizar(token)
+
+    if not token:
+        return ""
+
+    # Remove plural simples
+    if (
+        len(token) > 5
+        and token.endswith("s")
+    ):
+        token = token[:-1]
+
+    return token
+
+
+def tokens_tecnicos(texto):
+
+    resultado = []
+
+    for token in tokens(texto):
+
+        token = token_tecnico(
+            token
+        )
+
+        if not token:
+            continue
+
+        if token in TERMOS_GENERICOS:
+            continue
+
+        if len(token) < 4:
+            continue
+
+        resultado.append(
+            token
+        )
+
+    return list(
+        dict.fromkeys(
+            resultado
+        )
+    )
+
+
+def gerar_idf(base):
+
+    quantidade_documentos = len(
+        set(
+            item["arquivo"]
+            for item in base
+        )
+    )
+
+    frequencia = {}
+
+    documentos_vistos = {}
+
+    for item in base:
+
+        arquivo = item["arquivo"]
+
+        if arquivo in documentos_vistos:
+            continue
+
+        documentos_vistos[
+            arquivo
+        ] = True
+
+        texto = (
+            item["arquivo"]
+            +
+            " "
+            +
+            item["texto"]
+        )
+
+        termos = set(
+            tokens_tecnicos(
+                texto
+            )
+        )
+
+        for termo in termos:
+
+            frequencia[termo] = (
+                frequencia.get(
+                    termo,
+                    0
+                )
+                + 1
+            )
+
+
+    idf = {}
+
+    for termo, df in frequencia.items():
+
+        idf[termo] = (
+            np.log(
+                (
+                    quantidade_documentos
+                    + 1
+                )
+                /
+                (
+                    df
+                    + 1
+                )
+            )
+            + 1
+        )
+
+    return idf
+
+
+def calcular_relevancia_lexical(
+    consulta,
+    arquivo,
+    texto,
+    idf
+):
+
+    consulta_termos = set(
+        tokens_tecnicos(
+            consulta
+        )
+    )
+
+    if not consulta_termos:
+        return 0.0
+
+
+    texto_termos = set(
+        tokens_tecnicos(
+            texto
+        )
+    )
+
+
+    nome_termos = set(
+        tokens_tecnicos(
+            arquivo
+        )
+    )
+
+
+    peso_total = 0.0
+    peso_encontrado = 0.0
+
+
+    for termo in consulta_termos:
+
+        peso = idf.get(
+            termo,
+            1.0
+        )
+
+        peso_total += peso
+
+        if termo in texto_termos:
+
+            peso_encontrado += peso
+
+
+    if peso_total == 0:
+
+        score_texto = 0.0
+
+    else:
+
+        score_texto = (
+            peso_encontrado
+            /
+            peso_total
+        ) * 100
+
+
+    # --------------------------------------------------------
+    # Bônus pelo nome do arquivo
+    # --------------------------------------------------------
+
+    bonus_nome = 0.0
+
+    for termo in consulta_termos:
+
+        if termo in nome_termos:
+
+            peso = idf.get(
+                termo,
+                1.0
+            )
+
+            bonus_nome += (
+                12
+                *
+                peso
+                /
+                max(
+                    peso_total,
+                    1
+                )
+            )
+
+
+    # --------------------------------------------------------
+    # Bônus para combinações técnicas
+    # --------------------------------------------------------
+
+    consulta_lista = list(
+        consulta_termos
+    )
+
+    pares_encontrados = 0
+
+    for i in range(
+        len(consulta_lista)
+    ):
+
+        for j in range(
+            i + 1,
+            len(consulta_lista)
+        ):
+
+            termo_a = (
+                consulta_lista[i]
+            )
+
+            termo_b = (
+                consulta_lista[j]
+            )
+
+            if (
+                termo_a in texto_termos
+                and
+                termo_b in texto_termos
+            ):
+
+                pares_encontrados += 1
+
+
+    bonus_combinacao = min(
+        15,
+        pares_encontrados * 3
+    )
+
+
+    return min(
+        100,
+        score_texto
+        +
+        bonus_nome
+        +
+        bonus_combinacao
+    )
+
+
 def buscar(
     consulta,
     embeddings,
     metadados,
+    base,
     quantidade
 ):
 
     modelo = carregar_modelo()
 
-    query = modelo.encode(
+
+    # ========================================================
+    # 1. Similaridade semântica
+    # ========================================================
+
+    query_embedding = modelo.encode(
         [consulta],
         normalize_embeddings=True,
         show_progress_bar=False
     )[0]
 
+
     similaridades = np.dot(
         embeddings,
-        query
+        query_embedding
     )
 
-    melhores = {}
+
+    # ========================================================
+    # 2. Melhor similaridade semântica por arquivo
+    # ========================================================
+
+    melhores_semanticos = {}
 
     for indice, similaridade in enumerate(
         similaridades
@@ -791,30 +1102,113 @@ def buscar(
             ]["arquivo"]
         )
 
+
         if (
-            arquivo not in melhores
-            or
+            arquivo
+            not in
+            melhores_semanticos
+        ):
+
+            melhores_semanticos[
+                arquivo
+            ] = float(
+                similaridade
+            )
+
+        elif (
             similaridade
             >
-            melhores[
+            melhores_semanticos[
                 arquivo
             ]
         ):
 
-            melhores[
+            melhores_semanticos[
                 arquivo
             ] = float(
                 similaridade
             )
 
 
+    # ========================================================
+    # 3. Consolidar texto por arquivo
+    # ========================================================
+
+    documentos = {}
+
+
+    for item in base:
+
+        arquivo = item[
+            "arquivo"
+        ]
+
+
+        if arquivo not in documentos:
+
+            documentos[
+                arquivo
+            ] = {
+
+                "arquivo":
+                    arquivo,
+
+                "texto":
+                    "",
+
+                "registros":
+                    []
+
+            }
+
+
+        documentos[
+            arquivo
+        ]["texto"] += (
+            "\n"
+            +
+            item["texto"]
+        )
+
+
+        documentos[
+            arquivo
+        ]["registros"].extend(
+            item["registros"]
+        )
+
+
+    # ========================================================
+    # 4. IDF dos termos técnicos
+    # ========================================================
+
+    idf = gerar_idf(
+        base
+    )
+
+
     resultados = []
 
-    for arquivo, similaridade in (
-        melhores.items()
+
+    for arquivo, documento in (
+        documentos.items()
     ):
 
-        percentual = (
+        if arquivo not in (
+            melhores_semanticos
+        ):
+
+            continue
+
+
+        similaridade = (
+            melhores_semanticos[
+                arquivo
+            ]
+        )
+
+
+        semantica = (
             (
                 similaridade
                 + 1
@@ -823,27 +1217,74 @@ def buscar(
             2
         ) * 100
 
+
+        lexical = (
+            calcular_relevancia_lexical(
+                consulta,
+                arquivo,
+                documento["texto"],
+                idf
+            )
+        )
+
+
+        # ====================================================
+        # 5. Ranking híbrido
+        #
+        # 45% semântica
+        # 40% termos técnicos
+        # 15% reforço do nome/combinação
+        #
+        # O componente lexical já incorpora parte do
+        # nome e das combinações técnicas.
+        # ====================================================
+
+        score_hibrido = (
+            semantica * 0.45
+            +
+            lexical * 0.55
+        )
+
+
         resultados.append({
 
             "arquivo":
                 arquivo,
 
             "similaridade":
-                percentual
+                semantica,
+
+            "relevancia_tecnica":
+                lexical,
+
+            "score":
+                score_hibrido,
+
+            "termos":
+                tokens_tecnicos(
+                    consulta
+                )
 
         })
 
 
+    # ========================================================
+    # 6. Ordenação técnica
+    # ========================================================
+
     resultados.sort(
-        key=lambda x:
-            x["similaridade"],
+        key=lambda x: (
+            x["score"],
+            x["relevancia_tecnica"],
+            x["similaridade"]
+        ),
         reverse=True
     )
+
 
     return resultados[
         :quantidade
     ]
-
 
 # ============================================================
 # CONSOLIDAÇÃO ESTRUTURADA
@@ -1463,14 +1904,15 @@ if (
 
         inicio = time.time()
 
-        st.session_state.resultados = (
-            buscar(
-                atividade_busca,
-                st.session_state.embeddings,
-                st.session_state.metadados,
-                quantidade
-            )
-        )
+st.session_state.resultados = (
+    buscar(
+        atividade_busca,
+        st.session_state.embeddings,
+        st.session_state.metadados,
+        st.session_state.base,
+        quantidade
+    )
+)
 
 
         st.success(
@@ -1492,21 +1934,25 @@ if st.session_state.resultados:
     )
 
 
-    opcoes = [
+opcoes = [
 
-        (
-            f"{indice + 1}. "
-            f"{resultado['arquivo']} "
-            f"— "
-            f"{resultado['similaridade']:.1f}%"
-        )
+    (
+        f"{indice + 1}. "
+        f"{resultado['arquivo']} "
+        f"— Ranking técnico: "
+        f"{resultado['score']:.1f}% "
+        f"| Semântica: "
+        f"{resultado['similaridade']:.1f}% "
+        f"| Termos técnicos: "
+        f"{resultado['relevancia_tecnica']:.1f}%"
+    )
 
-        for indice, resultado
-        in enumerate(
-            st.session_state.resultados
-        )
+    for indice, resultado
+    in enumerate(
+        st.session_state.resultados
+    )
 
-    ]
+]
 
 
     selecionadas = st.multiselect(
