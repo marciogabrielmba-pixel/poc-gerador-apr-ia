@@ -1,4 +1,3 @@
-
 import streamlit as st
 import zipfile
 import io
@@ -1082,6 +1081,9 @@ if "extracao" not in st.session_state:
 if "apr_gerada" not in st.session_state:
     st.session_state.apr_gerada = None
 
+if "consulta_atividade" not in st.session_state:
+    st.session_state.consulta_atividade = ""
+
 
 # ============================================================
 # 1. CARREGAR BASE
@@ -1405,6 +1407,7 @@ if st.session_state.indice_pronto:
             st.session_state.resultados_busca = (
                 resultados
             )
+            st.session_state.consulta_atividade = consulta.strip()
 
             st.session_state.apr_selecionada = None
 
@@ -1755,130 +1758,189 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
         return len(ta & tb) / max(1, len(ta | tb))
 
 
-    def selecionar_itens_relevantes(tarefa, itens, limite=3):
-        itens = [limpar_item(x) for x in itens if str(x).strip()]
-        if not itens:
+    def _split_row_fields(linha):
+        return [p.strip() for p in str(linha).split("|")]
+
+
+    def _is_numero_risco(valor):
+        v = str(valor).strip().replace(",", ".")
+        return bool(re.fullmatch(r"[1-9](?:\.0)?", v))
+
+
+    def _limpar_texto_apr(texto):
+        texto = re.sub(r"\s+", " ", str(texto)).strip()
+        texto = re.sub(r"^Risco\s*:\s*", "", texto, flags=re.I)
+        return texto
+
+
+    def extrair_registros_apr_v72(texto):
+        """Extrai registros Tarefa/Risco/P/S/R/Medidas diretamente das linhas da planilha.
+        Evita usar a classificação por palavras-chave da V7.1, que misturava colunas inteiras.
+        """
+        registros = []
+        ordem = 0
+
+        for linha in str(texto).splitlines():
+            campos = _split_row_fields(linha)
+            if len(campos) < 6:
+                continue
+
+            # Cada ocorrência de três números consecutivos representa P, S e R.
+            triplets = []
+            for i in range(len(campos) - 2):
+                if (_is_numero_risco(campos[i]) and
+                    _is_numero_risco(campos[i + 1]) and
+                    _is_numero_risco(campos[i + 2])):
+                    triplets.append(i)
+
+            if not triplets:
+                continue
+
+            for pos, idx in enumerate(triplets):
+                if idx < 1:
+                    continue
+
+                tarefa = _limpar_texto_apr(campos[idx - 2] if idx >= 2 else "")
+                risco = _limpar_texto_apr(campos[idx - 1])
+                fim = triplets[pos + 1] if pos + 1 < len(triplets) else len(campos)
+                medidas = _limpar_texto_apr(" | ".join(campos[idx + 3:fim]))
+
+                if not tarefa or not risco or not medidas:
+                    continue
+
+                texto_norm = normalizar(tarefa)
+                risco_norm = normalizar(risco)
+                if texto_norm in {"sequencia da tarefa", "seqüencia da tarefa", "perigos", "n", "no"}:
+                    continue
+                if "branco" in risco_norm and "trivial" in normalizar(medidas):
+                    continue
+
+                registros.append({
+                    "ordem": ordem,
+                    "tarefa": tarefa,
+                    "risco": risco,
+                    "p": campos[idx],
+                    "s": campos[idx + 1],
+                    "r": campos[idx + 2],
+                    "medidas": medidas,
+                })
+                ordem += 1
+
+        # Remove duplicidades exatas preservando a primeira ocorrência.
+        unicos = []
+        vistos = set()
+        for r in registros:
+            chave = (normalizar(r["tarefa"]), normalizar(r["risco"]), normalizar(r["medidas"]))
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            unicos.append(r)
+        return unicos
+
+
+    def _score_registro_v72(registro, consulta):
+        base = f"{registro['tarefa']} {registro['risco']} {registro['medidas']}"
+        score = similaridade_textual(consulta, base)
+        q = set(tokens_relevantes(consulta))
+        b = set(tokens_relevantes(base))
+        if q and b:
+            score += 0.20 * (len(q & b) / len(q))
+        return score
+
+
+    def _classificar_barreiras_v72(medidas):
+        """Classifica somente a medida de controle do próprio registro."""
+        partes = [p.strip() for p in re.split(r"\s*\d+\s*[.)]\s+", medidas) if p.strip()]
+        if not partes:
+            partes = [medidas]
+
+        grupos = {"controle": [], "protecao": [], "apoio": []}
+        for parte in partes:
+            t = normalizar(parte)
+            if any(x in t for x in [
+                "cinto de seguranca", "capacete", "luva", "oculos", "protetor auricular",
+                "talabarte", "trava queda", "linha de vida", "guarda corpo", "epi"
+            ]):
+                grupo = "protecao"
+            elif any(x in t for x in [
+                "vigia", "observador", "sinalizacao", "cone", "fita zebrada",
+                "placa de sinalizacao", "isolamento"
+            ]):
+                grupo = "controle"
+            elif any(x in t for x in [
+                "inspecao", "check list", "checklist", "pt ", "permissao", "autorizacao",
+                "verificar", "inspecionar", "capacitado", "treinado", "procedimento",
+                "manter distancia", "condicao"
+            ]):
+                grupo = "controle"
+            else:
+                grupo = "controle"
+            if parte not in grupos[grupo]:
+                grupos[grupo].append(parte)
+
+        return grupos
+
+
+    def construir_apr_v72(apr_base, consulta):
+        registros = extrair_registros_apr_v72(apr_base.get("texto", ""))
+        if not registros:
             return []
-        ordenados = sorted(
-            enumerate(itens),
-            key=lambda par: (similaridade_textual(tarefa, par[1]), -par[0]),
-            reverse=True
-        )
-        selecionados = [item for _, item in ordenados[:limite]]
-        return selecionados
 
+        consulta = consulta.strip() or apr_base.get("arquivo", "")
+        objetos = set(normalizar(x) for x in apr_base.get("objetos", []))
+        consulta_expandida = consulta
+        if objetos:
+            consulta_expandida += " " + " ".join(objetos)
 
-    def classificar_barreira(texto, origem=""):
-        """Classificação heurística transparente das medidas já presentes na fonte."""
-        t = normalizar(texto)
-        o = normalizar(origem)
+        for r in registros:
+            r["score"] = _score_registro_v72(r, consulta_expandida)
 
-        apoio = (
-            "emergencia", "resgate", "primeiros socorros", "limpeza",
-            "organizacao", "organizacao do local", "apoio", "comunicacao",
-            "observador", "vigia", "sinalizacao de apoio"
-        )
-        protecao = (
-            "epi", "capacete", "luva", "oculos", "protetor", "cinturao",
-            "talabarte", "trava quedas", "linha de vida", "guarda corpo",
-            "rodape", "plataforma", "andaime", "escada", "isolamento fisico",
-            "cone", "fita zebrada", "barreira fisica", "epc"
-        )
-        controle = (
-            "inspecao", "inspecionar", "procedimento", "treinamento", "treinado",
-            "autorizacao", "permissao", "planejamento", "analise", "apr",
-            "isolamento", "sinalizacao", "bloqueio", "desenergizacao", "desligamento",
-            "checklist", "supervisao", "orientacao", "comunicacao de risco",
-            "seguir", "verificar", "conferir", "manter distancia"
-        )
-
-        if any(term in t for term in apoio):
-            return "Barreira de apoio"
-        if any(term in t for term in protecao) or "EPC" in origem.upper() or "EPI" in origem.upper():
-            return "Barreira de proteção"
-        if any(term in t for term in controle):
-            return "Barreira de controle"
-        return "Barreira de controle"
-
-
-    def construir_apr_v71(extracao):
-        etapas = [limpar_item(x) for x in extracao.get("Etapas da atividade", []) if str(x).strip()]
-        riscos = [limpar_item(x) for x in extracao.get("Riscos", []) if str(x).strip()]
-        if not riscos:
-            riscos = [limpar_item(x) for x in extracao.get("Perigos", []) if str(x).strip()]
-
-        controles = [
-            (limpar_item(x), "Medidas de controle")
-            for x in extracao.get("Medidas de controle", []) if str(x).strip()
-        ]
-        controles += [
-            (limpar_item(x), "EPC")
-            for x in extracao.get("EPC", []) if str(x).strip()
-        ]
-        controles += [
-            (limpar_item(x), "EPI")
-            for x in extracao.get("EPI", []) if str(x).strip()
-        ]
-
-        if not etapas:
-            etapas = [
-                "Etapa não identificada explicitamente na APR-base; revisar antes da emissão."
-            ]
+        # Seleciona os registros mais relacionados e depois restaura a ordem da APR.
+        selecionados = sorted(registros, key=lambda x: x["score"], reverse=True)[:12]
+        selecionados = sorted(selecionados, key=lambda x: x["ordem"])
 
         linhas = []
-        for i, etapa in enumerate(etapas[:15]):
-            riscos_rel = selecionar_itens_relevantes(etapa, riscos, limite=2)
-            if not riscos_rel:
-                riscos_rel = [
-                    "Risco não identificado explicitamente para esta etapa na APR-base."
-                ]
-
-            controles_rel = sorted(
-                controles,
-                key=lambda par: similaridade_textual(etapa, par[0]),
-                reverse=True
-            )[:8]
-
-            grupos = {
-                "Barreira de controle": [],
-                "Barreira de proteção": [],
-                "Barreira de apoio": []
-            }
-            for controle, origem in controles_rel:
-                grupo = classificar_barreira(controle, origem)
-                if controle not in grupos[grupo]:
-                    grupos[grupo].append(controle)
-
+        for r in selecionados:
+            grupos = _classificar_barreiras_v72(r["medidas"])
             linhas.append({
-                "tarefa": etapa,
-                "risco": " | ".join(riscos_rel),
+                "tarefa": r["tarefa"],
+                "risco": r["risco"],
                 "nivel": "Não informado",
-                "controle": " | ".join(grupos["Barreira de controle"]),
-                "protecao": " | ".join(grupos["Barreira de proteção"]),
-                "apoio": " | ".join(grupos["Barreira de apoio"])
+                "controle": " | ".join(grupos["controle"]),
+                "protecao": " | ".join(grupos["protecao"]),
+                "apoio": "",
+                "p": r["p"],
+                "s": r["s"],
+                "r": r["r"],
+                "fonte_registro": f"P={r['p']} / S={r['s']} / R={r['r']}"
             })
-
         return linhas
 
 
     # --------------------------------------------------------
-    # GERAR PRÉVIA
+    # GERAR PRÉVIA V7.2
     # --------------------------------------------------------
 
     if st.button("🚀 GERAR PRÉVIA DA APR", type="primary"):
         inicio_geracao = time.time()
-        with st.spinner("Organizando tarefas, riscos e barreiras a partir da APR-base..."):
-            st.session_state.apr_gerada = construir_apr_v71(extracao)
+        with st.spinner("Estruturando registros Tarefa → Risco → Medidas diretamente da APR-base..."):
+            st.session_state.apr_gerada = construir_apr_v72(
+                st.session_state.apr_selecionada,
+                st.session_state.consulta_atividade
+            )
         tempo_geracao = time.time() - inicio_geracao
-        st.success(f"Prévia da APR gerada em {tempo_geracao:.2f} segundos.")
+        if st.session_state.apr_gerada:
+            st.success(f"Prévia V7.2 gerada em {tempo_geracao:.2f} segundos.")
+        else:
+            st.error("Não foi possível identificar registros estruturados Tarefa/Risco/Medidas na APR-base.")
 
 
     if "apr_gerada" in st.session_state and st.session_state.apr_gerada:
 
-        st.subheader("📋 Prévia da APR gerada")
+        st.subheader("📋 Prévia da APR gerada — V7.2")
         st.caption(
             f"Fonte: {apr_base['arquivo']} — {apr_base['planilha']} | "
-            "A classificação das barreiras é uma sugestão da POC baseada no texto da fonte."
+            "Os riscos e medidas vêm do mesmo registro da APR-base; barreiras são classificação heurística das medidas."
         )
 
         nivel_opcoes = ["Não informado", "A", "M", "B"]
@@ -1887,29 +1949,26 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
             with st.container(border=True):
                 st.markdown(f"**Tarefa {idx + 1} — {linha['tarefa']}**")
                 st.markdown(f"**Risco:** {linha['risco']}")
+                st.caption(f"Fonte do registro: {linha.get('fonte_registro', '')}")
 
                 nivel = st.selectbox(
                     "Nível (A/M/B)",
                     nivel_opcoes,
                     index=nivel_opcoes.index(linha.get("nivel", "Não informado")),
-                    key=f"nivel_apr_v71_{idx}"
+                    key=f"nivel_apr_v72_{idx}"
                 )
                 st.session_state.apr_gerada[idx]["nivel"] = nivel
 
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.markdown("**Barreira de controle**")
-                    st.write(linha["controle"] or "Não identificada explicitamente na fonte.")
+                    st.write(linha["controle"] or "Não identificada explicitamente na medida fonte.")
                 with col2:
                     st.markdown("**Barreira de proteção**")
-                    st.write(linha["protecao"] or "Não identificada explicitamente na fonte.")
+                    st.write(linha["protecao"] or "Não identificada explicitamente na medida fonte.")
                 with col3:
                     st.markdown("**Barreira de apoio**")
-                    st.write(linha["apoio"] or "Não identificada explicitamente na fonte.")
-
-        # ----------------------------------------------------
-        # EXPORTAÇÃO EXCEL
-        # ----------------------------------------------------
+                    st.write(linha["apoio"] or "Não identificada explicitamente na medida fonte.")
 
         st.divider()
         st.subheader("📥 Exportar APR")
@@ -1918,11 +1977,10 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
 
-        def criar_excel_apr_v71():
+        def criar_excel_apr_v72():
             wb = Workbook()
             ws = wb.active
             ws.title = "APR Gerada"
-
             headers = [
                 "Descrição das tarefas (passo a passo)",
                 "Riscos associados às tarefas",
@@ -1931,55 +1989,39 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
                 "Barreira de proteção",
                 "Barreira de apoio"
             ]
-
             ws.append(headers)
-
             for linha in st.session_state.apr_gerada:
-                ws.append([
-                    linha["tarefa"],
-                    linha["risco"],
-                    linha["nivel"],
-                    linha["controle"],
-                    linha["protecao"],
-                    linha["apoio"]
-                ])
+                ws.append([linha["tarefa"], linha["risco"], linha["nivel"], linha["controle"], linha["protecao"], linha["apoio"]])
 
-            # Cabeçalho e layout
             header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
             header_font = Font(color="FFFFFF", bold=True)
             thin = Side(style="thin", color="B7B7B7")
-
             for cell in ws[1]:
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                 cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
             for row in ws.iter_rows(min_row=2):
                 for cell in row:
                     cell.alignment = Alignment(vertical="top", wrap_text=True)
                     cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-            larguras = [38, 42, 14, 48, 48, 42]
-            for i, largura in enumerate(larguras, start=1):
+            for i, largura in enumerate([42, 42, 14, 48, 48, 42], start=1):
                 ws.column_dimensions[get_column_letter(i)].width = largura
-
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
 
-            # Aba de rastreabilidade
             fonte = wb.create_sheet("Rastreabilidade")
             fonte.append(["Campo", "Informação"])
             fonte.append(["APR-base", apr_base["arquivo"]])
             fonte.append(["Planilha", apr_base["planilha"]])
-            fonte.append(["Índice V5.2", round(apr_base.get("score_hibrido", 0), 1)])
-            fonte.append(["Observação", "Conteúdo estruturado a partir das informações extraídas da APR-base; revisar e aprovar antes da emissão."])
-
+            fonte.append(["Consulta", st.session_state.consulta_atividade])
+            fonte.append(["Registros utilizados", len(st.session_state.apr_gerada)])
+            fonte.append(["Observação", "Riscos e medidas foram mantidos vinculados ao mesmo registro da fonte. Revisão técnica obrigatória antes da emissão."])
             for cell in fonte[1]:
                 cell.fill = header_fill
                 cell.font = header_font
-            fonte.column_dimensions["A"].width = 22
-            fonte.column_dimensions["B"].width = 90
+            fonte.column_dimensions["A"].width = 24
+            fonte.column_dimensions["B"].width = 100
             for row in fonte.iter_rows():
                 for cell in row:
                     cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -1989,20 +2031,18 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
             buffer.seek(0)
             return buffer.getvalue()
 
-        arquivo_excel = criar_excel_apr_v71()
-
+        arquivo_excel = criar_excel_apr_v72()
         st.download_button(
             label="⬇️ BAIXAR APR GERADA EM EXCEL",
             data=arquivo_excel,
-            file_name="APR_Gerada_V7_1.xlsx",
+            file_name="APR_Gerada_V7_2.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
 
         st.warning(
-            "⚠️ V7.1: a prévia é uma organização assistida do conteúdo encontrado na APR-base. "
-            "O sistema não deve ser tratado como aprovação técnica. O responsável pela APR "
-            "deve revisar tarefas, riscos, nível e barreiras antes da emissão."
+            "⚠️ V7.2: os registros são estruturados diretamente das linhas da APR-base. "
+            "O responsável pela APR deve revisar tarefas, riscos, nível e barreiras antes da emissão."
         )
 
 
@@ -2011,6 +2051,6 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
 # ============================================================
 
 st.caption(
-    "POC Gerador de APR com IA — V7.1 | "
+    "POC Gerador de APR com IA — V7.2 | "
     "Busca + Seleção + Extração + Geração Estruturada"
 )
