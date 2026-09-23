@@ -1773,7 +1773,7 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
         return texto
 
 
-    def extrair_registros_apr_v72(texto):
+    def extrair_registros_apr_v73(texto):
         """Extrai registros Tarefa/Risco/P/S/R/Medidas diretamente das linhas da planilha.
         Evita usar a classificação por palavras-chave da V7.1, que misturava colunas inteiras.
         """
@@ -1838,51 +1838,121 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
         return unicos
 
 
-    def _score_registro_v72(registro, consulta):
+    def classificar_nivel_am_v73(valor_r):
+        """Converte o R da matriz da APR-base para A/M/B conforme regra definida para a POC."""
+        try:
+            r = int(float(str(valor_r).strip().replace(",", ".")))
+        except (TypeError, ValueError):
+            return "Não informado"
+
+        if r in (1, 2):
+            return "B"
+        if r in (3, 4):
+            return "M"
+        if r in (6, 9):
+            return "A"
+        return "Não informado"
+
+
+    def _score_registro_v73(registro, consulta):
+        """Pontua relevância do registro para a atividade consultada."""
         base = f"{registro['tarefa']} {registro['risco']} {registro['medidas']}"
         score = similaridade_textual(consulta, base)
+
         q = set(tokens_relevantes(consulta))
         b = set(tokens_relevantes(base))
         if q and b:
             score += 0.20 * (len(q & b) / len(q))
+
+        # Reforça termos técnicos da atividade.
+        consulta_norm = normalizar(consulta)
+        base_norm = normalizar(base)
+        termos_tecnicos = [
+            "eletrocalha", "eletroduto", "suporte", "montagem",
+            "fixacao", "instalacao", "altura", "pta", "andaime",
+            "escada", "infraestrutura", "fibra", "cabo"
+        ]
+        for termo in termos_tecnicos:
+            if termo in consulta_norm and termo in base_norm:
+                score += 0.08
+
+        # Penaliza conteúdo administrativo/genérico quando não faz parte da atividade.
+        termos_genericos = [
+            "covid", "prevencao da covid", "orientacoes para prevencao da covid",
+            "nota: estou ciente", "ordem de servico"
+        ]
+        if any(t in normalizar(registro["tarefa"]) for t in termos_genericos):
+            score -= 0.80
+
         return score
 
 
-    def _classificar_barreiras_v72(medidas):
-        """Classifica somente a medida de controle do próprio registro."""
-        partes = [p.strip() for p in re.split(r"\s*\d+\s*[.)]\s+", medidas) if p.strip()]
+    def _registro_e_generico_v73(registro):
+        tarefa = normalizar(registro["tarefa"])
+        risco = normalizar(registro["risco"])
+        texto = f"{tarefa} {risco}"
+
+        genericos = [
+            "covid",
+            "prevencao da covid",
+            "orientacoes para prevencao da covid",
+            "nota: estou ciente",
+            "ordem de servico"
+        ]
+        return any(t in texto for t in genericos)
+
+
+    def _classificar_barreiras_v73(medidas):
+        """Classifica apenas medidas do próprio registro em controle, proteção ou apoio."""
+        partes = [
+            p.strip()
+            for p in re.split(r"\s*\d+\s*[.)]\s+", medidas)
+            if p.strip()
+        ]
         if not partes:
             partes = [medidas]
 
         grupos = {"controle": [], "protecao": [], "apoio": []}
+
         for parte in partes:
             t = normalizar(parte)
+
             if any(x in t for x in [
-                "cinto de seguranca", "capacete", "luva", "oculos", "protetor auricular",
-                "talabarte", "trava queda", "linha de vida", "guarda corpo", "epi"
+                "cinto de seguranca", "capacete", "luva", "oculos",
+                "protetor auricular", "talabarte", "trava queda",
+                "linha de vida", "guarda corpo", "epi",
+                "protetor facial", "mascara de protecao"
             ]):
                 grupo = "protecao"
+
             elif any(x in t for x in [
-                "vigia", "observador", "sinalizacao", "cone", "fita zebrada",
-                "placa de sinalizacao", "isolamento"
+                "vigia", "observador", "supervisor", "acompanhamento",
+                "treinamento", "treinado", "capacitado", "orientacao",
+                "comunicacao", "check list", "checklist",
+                "autorizacao", "permissao", "pt ", "procedimento",
+                "inspecao", "verificar", "inspecionar"
+            ]):
+                grupo = "apoio"
+
+            elif any(x in t for x in [
+                "sinalizacao", "cone", "fita zebrada", "placa de sinalizacao",
+                "isolamento", "delimitacao", "barreira fisica",
+                "organizar", "manter distancia", "distancia segura",
+                "aterramento", "bloqueio", "desenergizar"
             ]):
                 grupo = "controle"
-            elif any(x in t for x in [
-                "inspecao", "check list", "checklist", "pt ", "permissao", "autorizacao",
-                "verificar", "inspecionar", "capacitado", "treinado", "procedimento",
-                "manter distancia", "condicao"
-            ]):
-                grupo = "controle"
+
             else:
                 grupo = "controle"
+
             if parte not in grupos[grupo]:
                 grupos[grupo].append(parte)
 
         return grupos
 
 
-    def construir_apr_v72(apr_base, consulta):
-        registros = extrair_registros_apr_v72(apr_base.get("texto", ""))
+    def construir_apr_v73(apr_base, consulta):
+        registros = extrair_registros_apr_v73(apr_base.get("texto", ""))
         if not registros:
             return []
 
@@ -1893,54 +1963,67 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
             consulta_expandida += " " + " ".join(objetos)
 
         for r in registros:
-            r["score"] = _score_registro_v72(r, consulta_expandida)
+            r["score"] = _score_registro_v73(r, consulta_expandida)
+
+        # Remove conteúdo administrativo/genérico quando existem registros técnicos suficientes.
+        tecnicos = [r for r in registros if not _registro_e_generico_v73(r)]
+        candidatos = tecnicos if len(tecnicos) >= 3 else registros
 
         # Seleciona os registros mais relacionados e depois restaura a ordem da APR.
-        selecionados = sorted(registros, key=lambda x: x["score"], reverse=True)[:12]
+        selecionados = sorted(candidatos, key=lambda x: x["score"], reverse=True)[:12]
         selecionados = sorted(selecionados, key=lambda x: x["ordem"])
 
         linhas = []
         for r in selecionados:
-            grupos = _classificar_barreiras_v72(r["medidas"])
+            grupos = _classificar_barreiras_v73(r["medidas"])
+            nivel = classificar_nivel_am_v73(r["r"])
+
             linhas.append({
                 "tarefa": r["tarefa"],
                 "risco": r["risco"],
-                "nivel": "Não informado",
+                "nivel": nivel,
                 "controle": " | ".join(grupos["controle"]),
                 "protecao": " | ".join(grupos["protecao"]),
-                "apoio": "",
+                "apoio": " | ".join(grupos["apoio"]),
                 "p": r["p"],
                 "s": r["s"],
                 "r": r["r"],
                 "fonte_registro": f"P={r['p']} / S={r['s']} / R={r['r']}"
             })
+
         return linhas
 
 
     # --------------------------------------------------------
-    # GERAR PRÉVIA V7.2
+    # GERAR PRÉVIA V7.3
     # --------------------------------------------------------
 
     if st.button("🚀 GERAR PRÉVIA DA APR", type="primary"):
         inicio_geracao = time.time()
         with st.spinner("Estruturando registros Tarefa → Risco → Medidas diretamente da APR-base..."):
-            st.session_state.apr_gerada = construir_apr_v72(
+            st.session_state.apr_gerada = construir_apr_v73(
                 st.session_state.apr_selecionada,
                 st.session_state.consulta_atividade
             )
         tempo_geracao = time.time() - inicio_geracao
         if st.session_state.apr_gerada:
-            st.success(f"Prévia V7.2 gerada em {tempo_geracao:.2f} segundos.")
+            st.success(f"Prévia V7.3 gerada em {tempo_geracao:.2f} segundos.")
         else:
             st.error("Não foi possível identificar registros estruturados Tarefa/Risco/Medidas na APR-base.")
 
 
     if "apr_gerada" in st.session_state and st.session_state.apr_gerada:
 
-        st.subheader("📋 Prévia da APR gerada — V7.2")
+        st.subheader("📋 Prévia da APR gerada — V7.3")
         st.caption(
             f"Fonte: {apr_base['arquivo']} — {apr_base['planilha']} | "
             "Os riscos e medidas vêm do mesmo registro da APR-base; barreiras são classificação heurística das medidas."
+        )
+
+        st.info(
+            "Regra A/M/B aplicada ao R da fonte: R=1–2 → B (Baixo); "
+            "R=3–4 → M (Médio); R=6–9 → A (Alto). "
+            "O responsável pode revisar o nível antes da emissão."
         )
 
         nivel_opcoes = ["Não informado", "A", "M", "B"]
@@ -1955,7 +2038,7 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
                     "Nível (A/M/B)",
                     nivel_opcoes,
                     index=nivel_opcoes.index(linha.get("nivel", "Não informado")),
-                    key=f"nivel_apr_v72_{idx}"
+                    key=f"nivel_apr_v73_{idx}"
                 )
                 st.session_state.apr_gerada[idx]["nivel"] = nivel
 
@@ -1977,7 +2060,7 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
 
-        def criar_excel_apr_v72():
+        def criar_excel_apr_v73():
             wb = Workbook()
             ws = wb.active
             ws.title = "APR Gerada"
@@ -2031,7 +2114,7 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
             buffer.seek(0)
             return buffer.getvalue()
 
-        arquivo_excel = criar_excel_apr_v72()
+        arquivo_excel = criar_excel_apr_v73()
         st.download_button(
             label="⬇️ BAIXAR APR GERADA EM EXCEL",
             data=arquivo_excel,
@@ -2041,7 +2124,7 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
         )
 
         st.warning(
-            "⚠️ V7.2: os registros são estruturados diretamente das linhas da APR-base. "
+            "⚠️ V7.3: os registros são estruturados diretamente das linhas da APR-base. "
             "O responsável pela APR deve revisar tarefas, riscos, nível e barreiras antes da emissão."
         )
 
@@ -2051,6 +2134,6 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
 # ============================================================
 
 st.caption(
-    "POC Gerador de APR com IA — V7.2 | "
+    "POC Gerador de APR com IA — V7.3 | "
     "Busca + Seleção + Extração + Geração Estruturada"
 )
