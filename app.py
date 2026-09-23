@@ -1952,114 +1952,312 @@ if st.session_state.extracao and st.session_state.apr_selecionada:
 
 
     def construir_apr_v73(apr_base, consulta):
-        registros = extrair_registros_apr_v73(apr_base.get("texto", ""))
-        if not registros:
-            return []
+    registros = extrair_registros_apr_v73(apr_base.get("texto", ""))
+    if not registros:
+        return []
 
-        consulta = consulta.strip() or apr_base.get("arquivo", "")
-        objetos = set(normalizar(x) for x in apr_base.get("objetos", []))
-        consulta_expandida = consulta
-        if objetos:
-            consulta_expandida += " " + " ".join(objetos)
+    consulta = consulta.strip() or apr_base.get("arquivo", "")
 
-        for r in registros:
-            r["score"] = _score_registro_v73(r, consulta_expandida)
+    objetos = set(
+        normalizar(x)
+        for x in apr_base.get("objetos", [])
+        if x
+    )
 
-        # Remove conteúdo administrativo/genérico quando existem registros técnicos suficientes.
-        tecnicos = [r for r in registros if not _registro_e_generico_v73(r)]
-        candidatos = tecnicos if len(tecnicos) >= 3 else registros
-
-        # Seleciona os registros mais relacionados e depois restaura a ordem da APR.
-        selecionados = sorted(candidatos, key=lambda x: x["score"], reverse=True)[:12]
-        selecionados = sorted(selecionados, key=lambda x: x["ordem"])
-
-        linhas = []
-        for r in selecionados:
-            grupos = _classificar_barreiras_v73(r["medidas"])
-            nivel = classificar_nivel_am_v73(r["r"])
-
-            linhas.append({
-                "tarefa": r["tarefa"],
-                "risco": r["risco"],
-                "nivel": nivel,
-                "controle": " | ".join(grupos["controle"]),
-                "protecao": " | ".join(grupos["protecao"]),
-                "apoio": " | ".join(grupos["apoio"]),
-                "p": r["p"],
-                "s": r["s"],
-                "r": r["r"],
-                "fonte_registro": f"P={r['p']} / S={r['s']} / R={r['r']}"
-            })
-
-        return linhas
-
+    consulta_expandida = consulta
+    if objetos:
+        consulta_expandida += " " + " ".join(objetos)
 
     # --------------------------------------------------------
-    # GERAR PRÉVIA V7.3
+    # V7.4 — RELEVÂNCIA TÉCNICA
+    # --------------------------------------------------------
+    # A pontuação combina:
+    # consulta + objeto + tarefa + risco + medidas.
+    # O objetivo é priorizar registros tecnicamente relacionados
+    # à atividade solicitada.
     # --------------------------------------------------------
 
-    if st.button("🚀 GERAR PRÉVIA DA APR", type="primary"):
-        inicio_geracao = time.time()
-        with st.spinner("Estruturando registros Tarefa → Risco → Medidas diretamente da APR-base..."):
-            st.session_state.apr_gerada = construir_apr_v73(
-                st.session_state.apr_selecionada,
-                st.session_state.consulta_atividade
+    termos_consulta = set(
+        t for t in normalizar(consulta_expandida).split()
+        if len(t) >= 3
+    )
+
+    termos_genericos = {
+        "atividade",
+        "servico",
+        "serviço",
+        "trabalho",
+        "local",
+        "obra",
+        "equipe",
+        "processo",
+        "procedimento",
+        "equipamento",
+        "material",
+        "operacao",
+        "operação",
+        "execucao",
+        "execução",
+        "realizacao",
+        "realização",
+        "empresa",
+        "colaborador",
+        "colaboradores",
+        "seguranca",
+        "segurança"
+    }
+
+    termos_tecnicos_prioritarios = {
+        "eletrocalha",
+        "eletrocalhas",
+        "eletroduto",
+        "eletrodutos",
+        "suporte",
+        "suportes",
+        "montagem",
+        "montar",
+        "fixacao",
+        "fixação",
+        "instalacao",
+        "instalação",
+        "altura",
+        "andaime",
+        "escada",
+        "pta",
+        "plataforma",
+        "furacao",
+        "furação",
+        "corte",
+        "solda",
+        "soldagem",
+        "cabos",
+        "cabo"
+    }
+
+    def relevancia_v74(registro):
+        tarefa = normalizar(registro.get("tarefa", ""))
+        risco = normalizar(registro.get("risco", ""))
+        medidas = normalizar(registro.get("medidas", ""))
+
+        texto_total = f"{tarefa} {risco} {medidas}"
+
+        tokens = set(
+            t for t in texto_total.split()
+            if len(t) >= 3
+        )
+
+        # Correspondência geral com a consulta.
+        correspondencias = termos_consulta.intersection(tokens)
+
+        score = len(correspondencias)
+
+        # Tarefa recebe peso maior porque é o elemento principal
+        # da seleção da APR.
+        tokens_tarefa = set(
+            t for t in tarefa.split()
+            if len(t) >= 3
+        )
+
+        score += 2 * len(termos_consulta.intersection(tokens_tarefa))
+
+        # Risco e medidas também participam da relevância.
+        tokens_risco = set(
+            t for t in risco.split()
+            if len(t) >= 3
+        )
+
+        score += len(termos_consulta.intersection(tokens_risco))
+
+        tokens_medidas = set(
+            t for t in medidas.split()
+            if len(t) >= 3
+        )
+
+        score += len(termos_consulta.intersection(tokens_medidas))
+
+        # Reforça termos técnicos diretamente relacionados à atividade.
+        tecnicos_encontrados = termos_tecnicos_prioritarios.intersection(tokens)
+
+        score += 3 * len(
+            tecnicos_encontrados.intersection(termos_consulta)
+        )
+
+        # Reduz influência de palavras excessivamente genéricas.
+        score -= len(
+            correspondencias.intersection(termos_genericos)
+        )
+
+        return score
+
+    for r in registros:
+        r["score_v74"] = relevancia_v74(r)
+
+        # Mantém também o score original da V7.3 para rastreabilidade
+        # e comparação interna.
+        r["score"] = _score_registro_v73(r, consulta_expandida)
+
+    # --------------------------------------------------------
+    # FILTRO DE REGISTROS GENÉRICOS
+    # --------------------------------------------------------
+
+    tecnicos = [
+        r for r in registros
+        if not _registro_e_generico_v73(r)
+    ]
+
+    candidatos = tecnicos if len(tecnicos) >= 3 else registros
+
+    # --------------------------------------------------------
+    # SELEÇÃO V7.4
+    # --------------------------------------------------------
+    # Primeiro ordena pela relevância técnica V7.4.
+    # Em caso de empate, usa o score original.
+    # --------------------------------------------------------
+
+    selecionados = sorted(
+        candidatos,
+        key=lambda x: (
+            x.get("score_v74", 0),
+            x.get("score", 0)
+        ),
+        reverse=True
+    )[:12]
+
+    # Se houver registros com forte correspondência técnica,
+    # evita preencher a lista com registros de relevância muito baixa.
+    if selecionados:
+        maior_score = selecionados[0].get("score_v74", 0)
+
+        if maior_score > 0:
+            selecionados = [
+                r for r in selecionados
+                if r.get("score_v74", 0) >= max(1, maior_score * 0.25)
+            ]
+
+    # Restaura a ordem original da APR.
+    selecionados = sorted(
+        selecionados,
+        key=lambda x: x.get("ordem", 0)
+    )
+
+    # --------------------------------------------------------
+    # ESTRUTURAÇÃO DA APR
+    # --------------------------------------------------------
+
+    linhas = []
+
+    for r in selecionados:
+        medidas = r.get("medidas", "").strip()
+
+        grupos = _classificar_barreiras_v73(medidas)
+
+        nivel = classificar_nivel_am_v73(
+            r.get("r")
+        )
+
+        controle = list(grupos.get("controle", []))
+        protecao = list(grupos.get("protecao", []))
+        apoio = list(grupos.get("apoio", []))
+
+        # ----------------------------------------------------
+        # V7.4 — REFORÇO SEMÂNTICO DAS BARREIRAS
+        # ----------------------------------------------------
+        # Só adiciona uma classificação quando a própria medida
+        # contém indícios claros da categoria.
+        # ----------------------------------------------------
+
+        medida_lower = normalizar(medidas)
+
+        palavras_controle = (
+            "isolar",
+            "isolamento",
+            "sinalizar",
+            "sinalizacao",
+            "sinalização",
+            "inspecionar",
+            "inspecao",
+            "inspeção",
+            "verificar",
+            "check list",
+            "checklist",
+            "organizar",
+            "organizacao",
+            "organização",
+            "pt",
+            "permissao",
+            "permissão"
+        )
+
+        palavras_protecao = (
+            "cinto",
+            "talabarte",
+            "trava quedas",
+            "trava-quedas",
+            "linha de vida",
+            "capacete",
+            "oculos",
+            "óculos",
+            "luva",
+            "protetor",
+            "epi",
+            "guarda corpo",
+            "guarda-corpo",
+            "rodape",
+            "rodapé"
+        )
+
+        palavras_apoio = (
+            "treinamento",
+            "treinamento",
+            "orientacao",
+            "orientação",
+            "supervisao",
+            "supervisão",
+            "vigia",
+            "acompanhamento",
+            "responsavel",
+            "responsável",
+            "pt",
+            "check list",
+            "checklist"
+        )
+
+        if not controle and any(
+            termo in medida_lower
+            for termo in palavras_controle
+        ):
+            controle.append(medidas)
+
+        if not protecao and any(
+            termo in medida_lower
+            for termo in palavras_protecao
+        ):
+            protecao.append(medidas)
+
+        if not apoio and any(
+            termo in medida_lower
+            for termo in palavras_apoio
+        ):
+            apoio.append(medidas)
+
+        linhas.append({
+            "tarefa": r.get("tarefa", ""),
+            "risco": r.get("risco", ""),
+            "nivel": nivel,
+            "controle": " | ".join(dict.fromkeys(controle)),
+            "protecao": " | ".join(dict.fromkeys(protecao)),
+            "apoio": " | ".join(dict.fromkeys(apoio)),
+            "p": r.get("p"),
+            "s": r.get("s"),
+            "r": r.get("r"),
+            "fonte_registro": (
+                f"P={r.get('p')} / "
+                f"S={r.get('s')} / "
+                f"R={r.get('r')}"
             )
-        tempo_geracao = time.time() - inicio_geracao
-        if st.session_state.apr_gerada:
-            st.success(f"Prévia V7.3 gerada em {tempo_geracao:.2f} segundos.")
-        else:
-            st.error("Não foi possível identificar registros estruturados Tarefa/Risco/Medidas na APR-base.")
+        })
 
-
-    if "apr_gerada" in st.session_state and st.session_state.apr_gerada:
-
-        st.subheader("📋 Prévia da APR gerada — V7.3")
-        st.caption(
-            f"Fonte: {apr_base['arquivo']} — {apr_base['planilha']} | "
-            "Os riscos e medidas vêm do mesmo registro da APR-base; barreiras são classificação heurística das medidas."
-        )
-
-        st.info(
-            "Regra A/M/B aplicada ao R da fonte: R=1–2 → B (Baixo); "
-            "R=3–4 → M (Médio); R=6–9 → A (Alto). "
-            "O responsável pode revisar o nível antes da emissão."
-        )
-
-        nivel_opcoes = ["Não informado", "A", "M", "B"]
-
-        for idx, linha in enumerate(st.session_state.apr_gerada):
-            with st.container(border=True):
-                st.markdown(f"**Tarefa {idx + 1} — {linha['tarefa']}**")
-                st.markdown(f"**Risco:** {linha['risco']}")
-                st.caption(f"Fonte do registro: {linha.get('fonte_registro', '')}")
-
-                nivel = st.selectbox(
-                    "Nível (A/M/B)",
-                    nivel_opcoes,
-                    index=nivel_opcoes.index(linha.get("nivel", "Não informado")),
-                    key=f"nivel_apr_v73_{idx}"
-                )
-                st.session_state.apr_gerada[idx]["nivel"] = nivel
-
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.markdown("**Barreira de controle**")
-                    st.write(linha["controle"] or "Não identificada explicitamente na medida fonte.")
-                with col2:
-                    st.markdown("**Barreira de proteção**")
-                    st.write(linha["protecao"] or "Não identificada explicitamente na medida fonte.")
-                with col3:
-                    st.markdown("**Barreira de apoio**")
-                    st.write(linha["apoio"] or "Não identificada explicitamente na medida fonte.")
-
-        st.divider()
-        st.subheader("📥 Exportar APR")
-
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-        from openpyxl.utils import get_column_letter
-
+    return linhas
         def criar_excel_apr_v73():
             wb = Workbook()
             ws = wb.active
